@@ -25,6 +25,7 @@ import logging
 from dataclasses import asdict
 from enum import Enum
 from langchain_aws.graphs import NeptuneAnalyticsGraph, NeptuneGraph
+from ws_memory_mcp.graph_server import GraphServer
 from ws_memory_mcp.models import (
     GraphSchema,
     Node,
@@ -48,7 +49,7 @@ class EngineType(Enum):
     UNKNOWN = "unknown"
 
 
-class NeptuneServer:
+class NeptuneServer(GraphServer):
     """A unified interface for interacting with Amazon Neptune instances.
 
     This class provides methods for connecting to and querying both Neptune Analytics

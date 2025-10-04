@@ -25,12 +25,13 @@ from mcp.server.fastmcp import FastMCP
 from ws_memory_mcp.memory import KnowledgeGraphManager
 from ws_memory_mcp.models import Entity, KnowledgeGraph, Relation
 from ws_memory_mcp.neptune import NeptuneServer
+from ws_memory_mcp.falkordb_server import FalkorDBServer
 from typing import List
 
 
 logger = logging.getLogger(__name__)
 
-# Global variables for Neptune connection (will be initialized in main)
+# Global variables for graph database connection (will be initialized in main)
 graph = None
 memory = None
 
@@ -38,20 +39,21 @@ memory = None
 mcp = FastMCP(
     "Memory",
     instructions="""
-    This provides access to a memory for an agentic workflow stored in Amazon Neptune graph.
+    This provides access to a memory for an agentic workflow stored in a graph database (Neptune or FalkorDB).
     """,
     dependencies=[
         "langchain-aws",
         "mcp[cli]",
+        "falkordb",
     ]
 )
 
 @mcp.tool(name="get_memory_server_status")
 def get_status() -> str:
-    """Retrieve the current status of the Amazon Neptune memory server.
+    """Retrieve the current status of the graph database memory server.
 
     Returns:
-        str: The status information of the Neptune server instance.
+        str: The status information of the graph database server instance.
     """
     return graph.status()
 
@@ -67,7 +69,7 @@ def create_entities(entities: List[Entity]) -> str:
     Returns:
         str: Confirmation message indicating the result of the operation.
     """
-    result = memory.create_entities(entities)
+    result = memory.create_entities_with_ids(entities)
     return f"Successfully created {len(result)} entities."
 
 
@@ -89,29 +91,254 @@ def create_relations(relations: List[Relation]) -> str:
 
 @mcp.tool(name="read_memory",
         description="Read the memory knowledge graph")
-def read_graph() -> KnowledgeGraph:
+def read_graph() -> dict:
     """Read the entire memory knowledge graph.
 
     Returns:
-        KnowledgeGraph: A KnowledgeGraph object containing all entities and relations
-                       in the memory graph.
+        dict: A dictionary containing all entities and relations in the memory graph.
     """
-    return memory.read_graph()
+    graph = memory.read_graph()
+    return {
+        "entities": [{"name": e.name, "type": e.type, "observations": e.observations, "id": getattr(e, 'id', None)} for e in graph.entities],
+        "relations": [{"source": r.source, "target": r.target, "relationType": r.relationType, "id": getattr(r, 'id', None)} for r in graph.relations]
+    }
 
 
 @mcp.tool(name="search_memory",
         description="Search the memory knowledge graph for a specific entity name")
-def search_graph(query: str) -> KnowledgeGraph:
+def search_graph(query: str) -> dict:
     """Search the memory knowledge graph for entities matching a specific name.
 
     Args:
-        query (str): The search query string to match against entity names.
+        query (str): The search query string to match against entity names only (not observations).
+                    Empty queries return no results.
 
     Returns:
-        KnowledgeGraph: A KnowledgeGraph object containing the matching entities
-                       and their relations.
+        dict: A dictionary containing the matching entities and their relations.
     """
-    return memory.search_nodes(query)
+    graph = memory.search_nodes(query)
+    return {
+        "entities": [{"name": e.name, "type": e.type, "observations": e.observations, "id": getattr(e, 'id', None)} for e in graph.entities],
+        "relations": [{"source": r.source, "target": r.target, "relationType": r.relationType, "id": getattr(r, 'id', None)} for r in graph.relations]
+    }
+
+
+# ID-based operations
+@mcp.tool(name="get_entity_by_id",
+        description="Get an entity by its unique ID")
+def get_entity_by_id(entity_id: str) -> dict:
+    """Get an entity by its unique ID.
+
+    Args:
+        entity_id (str): Unique ID of the entity to retrieve
+
+    Returns:
+        dict: Entity data if found, or error message if not found
+    """
+    entity = memory.get_entity_by_id(entity_id)
+    if entity:
+        return {
+            "id": entity.id,
+            "name": entity.name,
+            "type": entity.type,
+            "observations": entity.observations
+        }
+    else:
+        return {"error": f"Entity with ID '{entity_id}' not found"}
+
+
+@mcp.tool(name="update_entity_by_id",
+        description="Update any attributes of an entity by its unique ID")
+def update_entity_by_id(entity_id: str, updates: dict) -> str:
+    """Update any attributes of an entity by its unique ID.
+
+    Args:
+        entity_id (str): Unique ID of the entity to update
+        updates (dict): Dictionary of attribute updates. 
+                       Supported keys: 'name', 'type', 'observations'
+
+    Returns:
+        str: Confirmation message indicating the result of the operation.
+    """
+    success = memory.update_entity_by_id(entity_id, updates)
+    if success:
+        updated_attrs = list(updates.keys())
+        return f"Successfully updated entity with ID '{entity_id}' attributes: {updated_attrs}."
+    else:
+        return f"Failed to update entity with ID '{entity_id}'. Entity may not exist or invalid attributes provided."
+
+
+@mcp.tool(name="delete_entity_by_id",
+        description="Delete an entity by its unique ID and all its relationships")
+def delete_entity_by_id(entity_id: str) -> str:
+    """Delete an entity by its unique ID and all its relationships.
+
+    Args:
+        entity_id (str): Unique ID of the entity to delete
+
+    Returns:
+        str: Confirmation message indicating the result of the operation.
+    """
+    success = memory.delete_entity_by_id(entity_id)
+    if success:
+        return f"Successfully deleted entity with ID '{entity_id}' and all its relationships."
+    else:
+        return f"Failed to delete entity with ID '{entity_id}'. Entity may not exist."
+
+
+@mcp.tool(name="get_relation_by_id",
+        description="Get a relationship by its unique ID")
+def get_relation_by_id(relation_id: str) -> dict:
+    """Get a relationship by its unique ID.
+
+    Args:
+        relation_id (str): Unique ID of the relationship to retrieve
+
+    Returns:
+        dict: Relationship data if found, or error message if not found
+    """
+    relation = memory.get_relation_by_id(relation_id)
+    if relation:
+        return {
+            "id": relation.id,
+            "source": relation.source,
+            "target": relation.target,
+            "relationType": relation.relationType,
+            "source_id": relation.source_id,
+            "target_id": relation.target_id
+        }
+    else:
+        return {"error": f"Relationship with ID '{relation_id}' not found"}
+
+
+@mcp.tool(name="update_relation_by_id",
+        description="Update attributes of a relationship by its unique ID")
+def update_relation_by_id(relation_id: str, updates: dict) -> str:
+    """Update attributes of a relationship by its unique ID.
+
+    Args:
+        relation_id (str): Unique ID of the relationship to update
+        updates (dict): Dictionary of attribute updates. 
+                       Supported keys: 'relationType', 'source', 'target'
+
+    Returns:
+        str: Confirmation message indicating the result of the operation.
+    """
+    logger.debug(f"Updating relation {relation_id} with updates: {updates}")
+    success = memory.update_relation_by_id(relation_id, updates)
+    if success:
+        updated_attrs = list(updates.keys())
+        return f"Successfully updated relationship with ID '{relation_id}' attributes: {updated_attrs}."
+    else:
+        return f"Failed to update relationship with ID '{relation_id}'. Relationship may not exist or invalid attributes provided."
+
+
+@mcp.tool(name="delete_relation_by_id",
+        description="Delete a relationship by its unique ID")
+def delete_relation_by_id(relation_id: str) -> str:
+    """Delete a relationship by its unique ID.
+
+    Args:
+        relation_id (str): Unique ID of the relationship to delete
+
+    Returns:
+        str: Confirmation message indicating the result of the operation.
+    """
+    success = memory.delete_relation_by_id(relation_id)
+    if success:
+        return f"Successfully deleted relationship with ID '{relation_id}'."
+    else:
+        return f"Failed to delete relationship with ID '{relation_id}'. Relationship may not exist."
+
+
+# ID lookup and smart operations
+@mcp.tool(name="find_entity_ids_by_name",
+        description="Find entity IDs by name - useful for identifying entities before updates/deletes")
+def find_entity_ids_by_name(name: str) -> dict:
+    """Find entity IDs by exact name match.
+
+    Args:
+        name (str): Exact name of the entity to find
+
+    Returns:
+        dict: Dictionary containing the list of matching entity IDs
+    """
+    ids = memory.find_entity_ids_by_name(name)
+    return {
+        "entity_ids": ids,
+        "count": len(ids),
+        "message": f"Found {len(ids)} entity(ies) with exact name '{name}'"
+    }
+
+
+@mcp.tool(name="find_entity_ids_by_attributes",
+        description="Find entity IDs by various attributes - useful for complex entity identification")
+def find_entity_ids_by_attributes(attributes: str) -> dict:
+    """Find entity IDs by various attributes (exact matches only).
+
+    Args:
+        attributes (str): JSON string of search criteria. Supported keys:
+                         - 'name': Exact name match
+                         - 'type': Exact type match
+                         Note: Observation search is not supported
+                         Example: '{"type": "Developer", "name": "Alice Johnson-Smith"}'
+
+    Returns:
+        dict: Dictionary containing the list of matching entity IDs
+    """
+    import json
+    try:
+        search_attrs = json.loads(attributes)
+        logger.debug(f"Searching entities with attributes: {search_attrs}")
+        ids = memory.find_entity_ids_by_attributes(**search_attrs)
+        return {
+            "entity_ids": ids,
+            "count": len(ids),
+            "search_criteria": search_attrs,
+            "message": f"Found {len(ids)} entity(ies) matching the criteria"
+        }
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error in entity search: {e}")
+        return {"error": "Invalid JSON format for attributes"}
+    except Exception as e:
+        logger.error(f"Error in entity search: {e}")
+        return {"error": f"Search failed: {str(e)}"}
+
+
+@mcp.tool(name="find_relation_ids_by_attributes",
+        description="Find relationship IDs by attributes - useful for identifying relationships before updates/deletes")
+def find_relation_ids_by_attributes(attributes: str) -> dict:
+    """Find relationship IDs by various attributes (exact matches only).
+
+    Args:
+        attributes (str): JSON string of search criteria. Supported keys:
+                         - 'source' or 'source_name': Source entity name (exact match)
+                         - 'target' or 'target_name': Target entity name (exact match)
+                         - 'relationType': Relationship type (exact match)
+                         - 'source_id': Source entity ID (exact match)
+                         - 'target_id': Target entity ID (exact match)
+                         Example: '{"source": "Alice Johnson-Smith", "target": "TechCorp", "relationType": "works_at"}'
+
+    Returns:
+        dict: Dictionary containing the list of matching relationship IDs
+    """
+    import json
+    try:
+        search_attrs = json.loads(attributes)
+        logger.debug(f"Searching relations with attributes: {search_attrs}")
+        ids = memory.find_relation_ids_by_attributes(**search_attrs)
+        return {
+            "relation_ids": ids,
+            "count": len(ids),
+            "search_criteria": search_attrs,
+            "message": f"Found {len(ids)} relationship(s) matching the criteria"
+        }
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error in relation search: {e}")
+        return {"error": "Invalid JSON format for attributes"}
+    except Exception as e:
+        logger.error(f"Error in relation search: {e}")
+        return {"error": f"Search failed: {str(e)}"}
 
 
 def configure_logging(log_level: str) -> None:
@@ -172,14 +399,25 @@ def main():
     This function initializes and runs the Model Context Protocol server,
     supporting both SSE (Server-Sent Events) and default transport options.
     Command line arguments can be used to configure the server port,
-    transport method, Neptune endpoint, HTTPS usage, and logging level.
+    transport method, database backend, and logging level.
 
     Command line arguments:
         --sse: Enable SSE transport
         --port: Specify the port number (default: 8888)
-        --endpoint: Neptune endpoint (required)
+        --backend: Database backend (neptune or falkordb, default: neptune)
+        
+        Neptune-specific arguments:
+        --endpoint: Neptune endpoint (required for Neptune)
         --use-https: Use HTTPS for Neptune connection (default: True)
         --no-https: Disable HTTPS for Neptune connection
+        
+        FalkorDB-specific arguments:
+        --falkor-host: FalkorDB host (default: localhost)
+        --falkor-port: FalkorDB port (default: 6379)
+        --falkor-password: FalkorDB password
+        --falkor-ssl: Use SSL for FalkorDB connection
+        --graph-name: Graph name for FalkorDB (default: memory)
+        
         --log-level: Set logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
     """
     global graph, memory
@@ -187,9 +425,21 @@ def main():
     parser = argparse.ArgumentParser(description='A Model Context Protocol (MCP) server')
     parser.add_argument('--sse', action='store_true', help='Use SSE transport')
     parser.add_argument('--port', type=int, default=8888, help='Port to run the server on')
-    parser.add_argument('--endpoint', type=str, required=True, help='Neptune endpoint (required)')
+    parser.add_argument('--backend', type=str, choices=['neptune', 'falkordb'], default='neptune',
+                       help='Database backend to use (default: neptune)')
+    
+    # Neptune-specific arguments
+    parser.add_argument('--endpoint', type=str, help='Neptune endpoint (required for Neptune backend)')
     parser.add_argument('--use-https', action='store_true', default=True, help='Use HTTPS for Neptune connection (default: True)')
     parser.add_argument('--no-https', action='store_true', help='Disable HTTPS for Neptune connection')
+    
+    # FalkorDB-specific arguments
+    parser.add_argument('--falkor-host', type=str, default='localhost', help='FalkorDB host (default: localhost)')
+    parser.add_argument('--falkor-port', type=int, default=6379, help='FalkorDB port (default: 6379)')
+    parser.add_argument('--falkor-password', type=str, help='FalkorDB password')
+    parser.add_argument('--falkor-ssl', action='store_true', help='Use SSL for FalkorDB connection')
+    parser.add_argument('--graph-name', type=str, default='memory', help='Graph name for FalkorDB (default: memory)')
+    
     parser.add_argument('--log-level', type=str, default='INFO', 
                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                        help='Set logging level (default: INFO)')
@@ -199,24 +449,45 @@ def main():
     # Configure logging first
     configure_logging(args.log_level)
 
-    # Configure Neptune connection
-    endpoint = args.endpoint
+    # Initialize graph database connection based on backend
+    if args.backend == 'neptune':
+        # Validate Neptune-specific arguments
+        if not args.endpoint:
+            raise ValueError("Neptune endpoint is required when using Neptune backend (--endpoint)")
+        
+        # Handle HTTPS configuration
+        if args.use_https and args.no_https:
+            raise ValueError("Cannot specify both --use-https and --no-https")
+        
+        if args.no_https:
+            use_https = False
+        else:
+            # Default to HTTPS (secure by default)
+            use_https = True
+        
+        logger.info(f"Using Neptune backend")
+        logger.info(f"Neptune endpoint: {args.endpoint}")
+        logger.info(f"Using HTTPS: {use_https}")
+        
+        # Initialize Neptune connection
+        graph = NeptuneServer(args.endpoint, use_https=use_https)
+        
+    elif args.backend == 'falkordb':
+        logger.info(f"Using FalkorDB backend")
+        logger.info(f"FalkorDB host: {args.falkor_host}:{args.falkor_port}")
+        logger.info(f"Graph name: {args.graph_name}")
+        logger.info(f"Using SSL: {args.falkor_ssl}")
+        
+        # Initialize FalkorDB connection
+        graph = FalkorDBServer(
+            host=args.falkor_host,
+            port=args.falkor_port,
+            password=args.falkor_password,
+            graph_name=args.graph_name,
+            ssl=args.falkor_ssl
+        )
     
-    # Handle HTTPS configuration
-    if args.use_https and args.no_https:
-        raise ValueError("Cannot specify both --use-https and --no-https")
-    
-    if args.no_https:
-        use_https = False
-    else:
-        # Default to HTTPS (secure by default)
-        use_https = True
-    
-    logger.info(f"Neptune endpoint: {endpoint}")
-    logger.info(f"Using HTTPS: {use_https}")
-    
-    # Initialize Neptune connection and memory manager
-    graph = NeptuneServer(endpoint, use_https=use_https)
+    # Initialize memory manager
     memory = KnowledgeGraphManager(graph, logger)
 
     # Run server with appropriate transport

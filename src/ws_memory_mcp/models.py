@@ -109,13 +109,15 @@ class Entity:
     with associated observations.
 
     Attributes:
-        name (str): The unique identifier or name of the entity
+        name (str): The name of the entity
         type (str): The type or category of the entity
         observations (List[str]): List of observations or facts about the entity
+        id (str, optional): Unique identifier for the entity (auto-generated if not provided)
     """
     name: str
     type: str
     observations: List[str]
+    id: str = None
 
 
 @dataclass
@@ -126,10 +128,16 @@ class Relation:
         source (str): The name/identifier of the source entity
         target (str): The name/identifier of the target entity
         relationType (str): The type of relationship between the entities
+        id (str, optional): Unique identifier for the relationship (auto-generated if not provided)
+        source_id (str, optional): ID of the source entity
+        target_id (str, optional): ID of the target entity
     """
     source: str
     target: str
     relationType: str
+    id: str = None
+    source_id: str = None
+    target_id: str = None
 
 
 @dataclass
