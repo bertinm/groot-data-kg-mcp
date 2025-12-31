@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  falkordb:
+    image: falkordb/falkordb:latest
+    container_name: groot-graph-db
+    networks:
+      - groot-isolated-net
+    ports:
+      - "6379:6379"
+      - "3000:3000"  # FalkorDB Browser UI
+    volumes:
+      - ./graph-memory:/var/lib/falkordb/data
+      - ./logs:/var/log/falkordb
+    restart: unless-stopped
+    environment:
+      - FALKORDB_ARGS=--save 60 1 --appendonly yes
+    
+  mcp-server:
+    build: .
+    container_name: groot-mcp-server
+    networks:
+      - groot-isolated-net
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./logs:/app/logs
+    environment:
+      - FASTMCP_LOG_LEVEL=INFO
+    depends_on:
+      - falkordb
+    command: >
+      uv run graph-memory-mcp-server 
+      --backend falkordb 
+      --falkor-host falkordb 
+      --falkor-port 6379 
+      --graph-name memory 
+      --sse 
+      --port 8888 
+      --log-level INFO
+    restart: unless-stopped
+
+networks:
+  groot-isolated-net:
+    driver: bridge

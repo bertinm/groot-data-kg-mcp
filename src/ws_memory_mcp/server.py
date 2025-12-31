@@ -341,23 +341,45 @@ def find_relation_ids_by_attributes(attributes: str) -> dict:
         return {"error": f"Search failed: {str(e)}"}
 
 
-def configure_logging(log_level: str) -> None:
+def configure_logging(log_level: str, log_file: str = None) -> None:
     """Configure logging for the application and AWS SDK.
     
     Args:
         log_level (str): The logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        log_file (str): Optional path to log file for persistent logging
     """
     # Convert string to logging level
     numeric_level = getattr(logging, log_level.upper(), None)
     if not isinstance(numeric_level, int):
         raise ValueError(f'Invalid log level: {log_level}')
     
-    # Configure root logger
-    logging.basicConfig(
-        level=numeric_level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    # Create formatters
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
+    
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(numeric_level)
+    
+    # Clear existing handlers
+    root_logger.handlers.clear()
+    
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(numeric_level)
+    console_handler.setFormatter(formatter)
+    root_logger.addHandler(console_handler)
+    
+    # File handler if log_file is specified
+    if log_file:
+        import os
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setLevel(numeric_level)
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
     
     # Configure application logger
     logger.setLevel(numeric_level)
@@ -443,11 +465,12 @@ def main():
     parser.add_argument('--log-level', type=str, default='INFO', 
                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                        help='Set logging level (default: INFO)')
+    parser.add_argument('--log-file', type=str, help='Path to log file for persistent logging')
 
     args = parser.parse_args()
     
     # Configure logging first
-    configure_logging(args.log_level)
+    configure_logging(args.log_level, args.log_file)
 
     # Initialize graph database connection based on backend
     if args.backend == 'neptune':
@@ -493,6 +516,9 @@ def main():
     # Run server with appropriate transport
     if args.sse:
         mcp.settings.port = args.port
+        # Try to set host to bind to all interfaces
+        if hasattr(mcp.settings, 'host'):
+            mcp.settings.host = '0.0.0.0'
         mcp.run(transport='streamable-http')
     else:
         mcp.run()
