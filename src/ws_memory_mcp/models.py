@@ -21,9 +21,10 @@ The module contains two main groups of models:
 2. Knowledge Graph Models: For representing the actual data within the graph
 """
 
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import List
+from typing import Any, Dict, List
 
 
 class QueryLanguage(Enum):
@@ -33,6 +34,7 @@ class QueryLanguage(Enum):
         OPEN_CYPHER: OpenCypher query language
         GREMLIN: Gremlin query language
     """
+
     OPEN_CYPHER = 'OPEN_CYPHER'
     GREMLIN = 'GREMLIN'
 
@@ -45,6 +47,7 @@ class Property:
         name (str): The name of the property
         type (str): The data type of the property
     """
+
     name: str
     type: str
 
@@ -57,6 +60,7 @@ class Node:
         labels (str): The label(s) associated with the node
         properties (List[Property]): List of properties that can be assigned to this node type
     """
+
     labels: str
     properties: List[Property]
 
@@ -69,6 +73,7 @@ class Relationship:
         type (str): The type of relationship
         properties (List[Property]): List of properties that can be assigned to this relationship type
     """
+
     type: str
     properties: List[Property]
 
@@ -82,6 +87,7 @@ class RelationshipPattern:
         right_node (str): The label of the target node
         relation (str): The type of relationship between the nodes
     """
+
     left_node: str
     right_node: str
     relation: str
@@ -96,6 +102,7 @@ class GraphSchema:
         relationships (List[Relationship]): List of all relationship types in the schema
         relationship_patterns (List[RelationshipPattern]): List of valid relationship patterns
     """
+
     nodes: List[Node]
     relationships: List[Relationship]
     relationship_patterns: List[RelationshipPattern]
@@ -106,18 +113,28 @@ class Entity:
     """Represents an entity in the knowledge graph.
 
     An entity is a node in the graph that represents a distinct concept or object
-    with associated observations.
+    with associated observations and temporal tracking.
 
     Attributes:
         name (str): The name of the entity
         type (str): The type or category of the entity
-        observations (List[str]): List of observations or facts about the entity
+        observations (List[str]): List of timestamped, recent observations about the entity.
+                                 Each observation must be formatted as "YYYY-MM-DD HH:MM:SS | content"
+                                 and contain ONLY recent, time-sensitive information (not relationships
+                                 or static facts). Maximum 15 entries, auto-pruned when exceeded.
         id (str, optional): Unique identifier for the entity (auto-generated if not provided)
+        created_at (float): System timestamp when entity was created
+        last_modified (float): System timestamp when entity was last modified
+        metadata (Dict[str, Any]): For provenance and additional system metadata
     """
+
     name: str
     type: str
     observations: List[str]
     id: str = None
+    created_at: float = field(default_factory=time.time)
+    last_modified: float = field(default_factory=time.time)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -131,13 +148,18 @@ class Relation:
         id (str, optional): Unique identifier for the relationship (auto-generated if not provided)
         source_id (str, optional): ID of the source entity
         target_id (str, optional): ID of the target entity
+        created_at (float): System timestamp when relation was created
+        properties (Dict[str, Any]): For semantic attributes like weight, temporal context (valid_from, valid_to)
     """
+
     source: str
     target: str
     relationType: str
     id: str = None
     source_id: str = None
     target_id: str = None
+    created_at: float = field(default_factory=time.time)
+    properties: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -151,6 +173,7 @@ class KnowledgeGraph:
         entities (List[Entity]): List of all entities in the knowledge graph
         relations (List[Relation]): List of all relationships between entities
     """
+
     entities: List[Entity]
     relations: List[Relation]
 
@@ -159,11 +182,14 @@ class KnowledgeGraph:
 class Observation:
     """Represents an observation about an entity in the knowledge graph.
 
-    Observations are facts or pieces of information associated with a specific entity.
+    Observations are timestamped, recent facts or pieces of information associated with a specific entity.
+    Each observation should be formatted as "YYYY-MM-DD HH:MM:SS | content" and contain only
+    time-sensitive information, not relationships or static facts.
 
     Attributes:
         entityName (str): The name of the entity this observation relates to
-        contents (List[str]): List of observation contents or facts
+        contents (List[str]): List of timestamped observation contents, max 15 entries
     """
+
     entityName: str
     contents: List[str]

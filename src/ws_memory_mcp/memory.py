@@ -18,15 +18,25 @@ relations, and observations in the knowledge graph.
 
 The KnowledgeGraphManager class serves as the main interface for all graph operations,
 providing methods to manipulate and query the graph structure while maintaining data consistency.
+
+Note: Entity observations should be timestamped entries in format "YYYY-MM-DD HH:MM:SS | content"
+containing only recent, time-sensitive information (not relationships or static facts).
+Maximum 15 entries per entity, with automatic pruning of oldest entries when limit is exceeded.
 """
 
 import json
 import logging
+import time
 import uuid
 from dataclasses import asdict
-from ws_memory_mcp.graph_server import GraphServer
-from ws_memory_mcp.models import Entity, KnowledgeGraph, Observation, QueryLanguage, Relation
 from typing import Any, Dict, List, Optional
+from ws_memory_mcp.graph_server import GraphServer
+from ws_memory_mcp.models import (
+    Entity,
+    KnowledgeGraph,
+    QueryLanguage,
+    Relation,
+)
 
 
 class KnowledgeGraphManager:
@@ -65,80 +75,146 @@ class KnowledgeGraphManager:
         """
         if filter_query:
             query = """
-            MATCH (entity:Memory) 
+            MATCH (entity:Memory)
             WHERE toLower(entity.name) CONTAINS toLower($filter)
-            RETURN entity.id as id, entity.name as name, entity.type as type, entity.observations as observations
+            RETURN entity.id as id, entity.name as name, entity.type as type, entity.observations as observations,
+                   entity.created_at as created_at, entity.last_modified as last_modified,
+                   properties(entity) as all_properties
             """
         else:
             query = """
             MATCH (entity:Memory)
-            RETURN entity.id as id, entity.name as name, entity.type as type, entity.observations as observations
+            RETURN entity.id as id, entity.name as name, entity.type as type, entity.observations as observations,
+                   entity.created_at as created_at, entity.last_modified as last_modified,
+                   properties(entity) as all_properties
             """
-        resp = self.client.query(query, parameters={"filter": filter_query}, language=QueryLanguage.OPEN_CYPHER)
-        result = json.loads(resp)["results"]
+        resp = self.client.query(
+            query,
+            parameters={'filter': filter_query},
+            language=QueryLanguage.OPEN_CYPHER,
+        )
+        result = json.loads(resp)['results']
 
         entities = []
         for record in result:
             # Handle different result formats from different backends
             if isinstance(record, dict):
                 # Check for direct field access (FalkorDB format)
-                if "name" in record and "type" in record:
-                    observations = record.get("observations", [])
+                if 'name' in record and 'type' in record:
+                    observations = record.get('observations', [])
                     # Handle both list and string formats for observations
                     if isinstance(observations, str):
-                        observations = observations.split("|") if observations else []
+                        observations = observations.split('|') if observations else []
                     elif not isinstance(observations, list):
                         observations = []
-                    
+
+                    # Extract metadata from all_properties, excluding core fields
+                    all_props = record.get('all_properties', {})
+                    metadata = {}
+                    if isinstance(all_props, dict):
+                        core_fields = {
+                            'id',
+                            'name',
+                            'type',
+                            'observations',
+                            'created_at',
+                            'last_modified',
+                        }
+                        metadata = {
+                            k: v for k, v in all_props.items() if k not in core_fields
+                        }
+
                     entities.append(
                         Entity(
-                            id=record.get("id"),
-                            name=record["name"],
-                            type=record["type"],
+                            id=record.get('id'),
+                            name=record['name'],
+                            type=record['type'],
                             observations=observations,
+                            created_at=record.get('created_at', time.time()),
+                            last_modified=record.get('last_modified', time.time()),
+                            metadata=metadata,
                         )
                     )
-                # Check for column-based format (col_0, col_1, col_2, col_3)
-                elif "col_0" in record and "col_1" in record:
-                    # col_0 = id, col_1 = name, col_2 = type, col_3 = observations
-                    entity_id = record.get("col_0")
-                    name = record.get("col_1")
-                    entity_type = record.get("col_2")
-                    observations = record.get("col_3", [])
-                    
+                # Check for column-based format (col_0, col_1, col_2, col_3, col_4, col_5, col_6)
+                elif 'col_0' in record and 'col_1' in record:
+                    # col_0 = id, col_1 = name, col_2 = type, col_3 = observations,
+                    # col_4 = created_at, col_5 = last_modified, col_6 = all_properties
+                    entity_id = record.get('col_0')
+                    name = record.get('col_1')
+                    entity_type = record.get('col_2')
+                    observations = record.get('col_3', [])
+
                     # Handle both list and string formats for observations
                     if isinstance(observations, str):
-                        observations = observations.split("|") if observations else []
+                        observations = observations.split('|') if observations else []
                     elif not isinstance(observations, list):
                         observations = []
-                    
+
+                    # Extract metadata from all_properties, excluding core fields
+                    all_props = record.get('col_6', {})
+                    metadata = {}
+                    if isinstance(all_props, dict):
+                        core_fields = {
+                            'id',
+                            'name',
+                            'type',
+                            'observations',
+                            'created_at',
+                            'last_modified',
+                        }
+                        metadata = {
+                            k: v for k, v in all_props.items() if k not in core_fields
+                        }
+
                     entities.append(
                         Entity(
                             id=entity_id,
                             name=name,
                             type=entity_type,
                             observations=observations,
+                            created_at=record.get('col_4', time.time()),
+                            last_modified=record.get('col_5', time.time()),
+                            metadata=metadata,
                         )
                     )
                     continue
                 # Check for Neptune format with nested node
-                elif "node" in record:
-                    record = record["node"]
-                
-                if "name" in record:
-                    observations = record.get("observations", [])
+                elif 'node' in record:
+                    record = record['node']
+
+                if 'name' in record:
+                    observations = record.get('observations', [])
                     # Handle both list and string formats for observations
                     if isinstance(observations, str):
-                        observations = observations.split("|") if observations else []
+                        observations = observations.split('|') if observations else []
                     elif not isinstance(observations, list):
                         observations = []
-                    
+
+                    # Extract metadata from all_properties, excluding core fields
+                    all_props = record.get('all_properties', {})
+                    metadata = {}
+                    if isinstance(all_props, dict):
+                        core_fields = {
+                            'id',
+                            'name',
+                            'type',
+                            'observations',
+                            'created_at',
+                            'last_modified',
+                        }
+                        metadata = {
+                            k: v for k, v in all_props.items() if k not in core_fields
+                        }
+
                     entities.append(
                         Entity(
-                            id=record.get("id"),
-                            name=record["name"],
-                            type=record.get("type", "Unknown"),
+                            id=record.get('id'),
+                            name=record['name'],
+                            type=record.get('type', 'Unknown'),
                             observations=observations,
+                            created_at=record.get('created_at', time.time()),
+                            last_modified=record.get('last_modified', time.time()),
+                            metadata=metadata,
                         )
                     )
 
@@ -146,65 +222,128 @@ class KnowledgeGraphManager:
             query = """
             MATCH (source:Memory)-[r:related_to]->(target:Memory)
             WHERE toLower(source.name) CONTAINS toLower($filter) OR toLower(target.name) CONTAINS toLower($filter)
-            RETURN r.id as id, source.name as source, target.name as target, r.type as relationType, source.id as source_id, target.id as target_id
+            RETURN r.id as id, source.name as source, target.name as target, r.type as relationType,
+                   source.id as source_id, target.id as target_id, r.created_at as created_at,
+                   properties(r) as all_properties
             """
         else:
             query = """
             MATCH (source:Memory)-[r:related_to]->(target:Memory)
-            RETURN r.id as id, source.name as source, target.name as target, r.type as relationType, source.id as source_id, target.id as target_id
+            RETURN r.id as id, source.name as source, target.name as target, r.type as relationType,
+                   source.id as source_id, target.id as target_id, r.created_at as created_at,
+                   properties(r) as all_properties
             """
-        resp = self.client.query(query, parameters={"filter": filter_query}, language=QueryLanguage.OPEN_CYPHER)
+        resp = self.client.query(
+            query,
+            parameters={'filter': filter_query},
+            language=QueryLanguage.OPEN_CYPHER,
+        )
 
-        result = json.loads(resp)["results"]
+        result = json.loads(resp)['results']
         rels = []
         for record in result:
             # Handle different result formats from different backends
             if isinstance(record, dict):
                 # Check for direct field access
-                if "source" in record and "target" in record and "relationType" in record:
+                if (
+                    'source' in record
+                    and 'target' in record
+                    and 'relationType' in record
+                ):
+                    # Extract properties from all_properties, excluding core fields
+                    all_props = record.get('all_properties', {})
+                    properties = {}
+                    if isinstance(all_props, dict):
+                        core_fields = {
+                            'id',
+                            'type',
+                            'source_id',
+                            'target_id',
+                            'created_at',
+                        }
+                        properties = {
+                            k: v for k, v in all_props.items() if k not in core_fields
+                        }
+
                     rels.append(
                         Relation(
-                            id=record.get("id"),
-                            source=record["source"],
-                            target=record["target"],
-                            relationType=record["relationType"],
-                            source_id=record.get("source_id"),
-                            target_id=record.get("target_id")
+                            id=record.get('id'),
+                            source=record['source'],
+                            target=record['target'],
+                            relationType=record['relationType'],
+                            source_id=record.get('source_id'),
+                            target_id=record.get('target_id'),
+                            created_at=record.get('created_at', time.time()),
+                            properties=properties,
                         )
                     )
-                # Check for column-based format (col_0, col_1, col_2, col_3, col_4, col_5)
-                elif "col_0" in record and "col_1" in record and "col_2" in record:
-                    # col_0 = r.id, col_1 = source.name, col_2 = target.name, col_3 = r.type, col_4 = source.id, col_5 = target.id
+                # Check for column-based format (col_0, col_1, col_2, col_3, col_4, col_5, col_6, col_7)
+                elif 'col_0' in record and 'col_1' in record and 'col_2' in record:
+                    # col_0 = r.id, col_1 = source.name, col_2 = target.name, col_3 = r.type,
+                    # col_4 = source.id, col_5 = target.id, col_6 = r.created_at, col_7 = all_properties
+                    all_props = record.get('col_7', {})
+                    properties = {}
+                    if isinstance(all_props, dict):
+                        core_fields = {
+                            'id',
+                            'type',
+                            'source_id',
+                            'target_id',
+                            'created_at',
+                        }
+                        properties = {
+                            k: v for k, v in all_props.items() if k not in core_fields
+                        }
+
                     rels.append(
                         Relation(
-                            id=record.get("col_0"),
-                            source=record.get("col_1"),
-                            target=record.get("col_2"),
-                            relationType=record.get("col_3"),
-                            source_id=record.get("col_4"),
-                            target_id=record.get("col_5")
+                            id=record.get('col_0'),
+                            source=record.get('col_1'),
+                            target=record.get('col_2'),
+                            relationType=record.get('col_3'),
+                            source_id=record.get('col_4'),
+                            target_id=record.get('col_5'),
+                            created_at=record.get('col_6', time.time()),
+                            properties=properties,
                         )
                     )
                 # Check for Neptune format with nested rel
-                elif "rel" in record:
-                    rel_data = record["rel"]
-                    if "relationType" in rel_data:
+                elif 'rel' in record:
+                    rel_data = record['rel']
+                    if 'relationType' in rel_data:
+                        # Extract properties from all_properties, excluding core fields
+                        all_props = rel_data.get('all_properties', {})
+                        properties = {}
+                        if isinstance(all_props, dict):
+                            core_fields = {
+                                'id',
+                                'type',
+                                'source_id',
+                                'target_id',
+                                'created_at',
+                            }
+                            properties = {
+                                k: v
+                                for k, v in all_props.items()
+                                if k not in core_fields
+                            }
+
                         rels.append(
                             Relation(
-                                id=rel_data.get("id"),
-                                source=rel_data["source"],
-                                target=rel_data["target"],
-                                relationType=rel_data["relationType"],
-                                source_id=rel_data.get("source_id"),
-                                target_id=rel_data.get("target_id")
+                                id=rel_data.get('id'),
+                                source=rel_data['source'],
+                                target=rel_data['target'],
+                                relationType=rel_data['relationType'],
+                                source_id=rel_data.get('source_id'),
+                                target_id=rel_data.get('target_id'),
+                                created_at=rel_data.get('created_at', time.time()),
+                                properties=properties,
                             )
                         )
 
-        self.logger.debug(f"Loaded entities: {entities}")
-        self.logger.debug(f"Loaded relations: {rels}")
+        self.logger.debug(f'Loaded entities: {entities}')
+        self.logger.debug(f'Loaded relations: {rels}')
         return KnowledgeGraph(entities=entities, relations=rels)
-
-
 
     def create_relations(self, relations: List[Relation]) -> List[Relation]:
         """Create new relations between entities in the knowledge graph.
@@ -219,7 +358,10 @@ class KnowledgeGraphManager:
         for relation in relations:
             if not relation.id:
                 relation.id = str(uuid.uuid4())
-        
+            # Ensure created_at is set
+            if not hasattr(relation, 'created_at') or relation.created_at is None:
+                relation.created_at = time.time()
+
         query = """
         UNWIND $relations as relation
         MATCH (from:Memory),(to:Memory)
@@ -230,15 +372,26 @@ class KnowledgeGraphManager:
         SET r.type = relation.relationType
         SET r.source_id = from.id
         SET r.target_id = to.id
+        SET r.created_at = relation.created_at
+        SET r += relation.properties
         """
 
+        # Prepare relation data with properties
+        relations_data = []
+        for relation in relations:
+            relation_dict = asdict(relation)
+            # Ensure properties is included
+            if 'properties' not in relation_dict:
+                relation_dict['properties'] = {}
+            relations_data.append(relation_dict)
+
         self.client.query(
-            query, parameters={"relations": [asdict(relation) for relation in relations]}, language=QueryLanguage.OPEN_CYPHER
+            query,
+            parameters={'relations': relations_data},
+            language=QueryLanguage.OPEN_CYPHER,
         )
 
         return relations
-
-
 
     def read_graph(self) -> KnowledgeGraph:
         """Read the entire knowledge graph.
@@ -258,17 +411,17 @@ class KnowledgeGraphManager:
             KnowledgeGraph: Graph containing matching nodes and their relations
         """
         self.logger.debug(f"Searching nodes with query: '{query}'")
-        
+
         # If query is empty, return empty results instead of all data
-        if not query or query.strip() == "":
-            self.logger.debug("Empty query provided, returning empty results")
+        if not query or query.strip() == '':
+            self.logger.debug('Empty query provided, returning empty results')
             return KnowledgeGraph(entities=[], relations=[])
-        
+
         result = self.load_graph(query)
-        self.logger.debug(f"Search found {len(result.entities)} entities and {len(result.relations)} relations")
+        self.logger.debug(
+            f'Search found {len(result.entities)} entities and {len(result.relations)} relations'
+        )
         return result
-
-
 
     def find_entity_ids_by_name(self, name: str) -> List[str]:
         """Find entity IDs by name (exact match only).
@@ -281,13 +434,13 @@ class KnowledgeGraphManager:
         """
         # Use the same approach as load_graph but filter by name
         graph = self.load_graph()  # Load all entities
-        
+
         ids = []
         for entity in graph.entities:
             # Exact match only
             if entity.name == name and entity.id is not None:
                 ids.append(entity.id)
-        
+
         return ids
 
     def find_entity_ids_by_attributes(self, **attributes) -> List[str]:
@@ -299,16 +452,16 @@ class KnowledgeGraphManager:
         Returns:
             List[str]: List of entity IDs that match the criteria (exact matches only)
         """
-        self.logger.debug(f"Searching entities with attributes: {attributes}")
-        
+        self.logger.debug(f'Searching entities with attributes: {attributes}')
+
         # Use the same approach as load_graph but filter by attributes
         graph = self.load_graph()  # Load all entities
-        
+
         ids = []
         for entity in graph.entities:
             if entity.id is None:
                 continue
-                
+
             match = True
             for key, value in attributes.items():
                 if key == 'name':
@@ -321,42 +474,49 @@ class KnowledgeGraphManager:
                     if entity.type != value:
                         match = False
                         break
-                elif key in ['observations', 'observation_contains', 'name_contains', 'type_contains']:
+                elif key in [
+                    'observations',
+                    'observation_contains',
+                    'name_contains',
+                    'type_contains',
+                ]:
                     # Observation search not allowed
-                    self.logger.warning(f"Search on observations is not supported: {key}")
+                    self.logger.warning(
+                        f'Search on observations is not supported: {key}'
+                    )
                     match = False
                     break
                 else:
-                    self.logger.warning(f"Unsupported search attribute: {key}")
+                    self.logger.warning(f'Unsupported search attribute: {key}')
                     match = False
                     break
-            
+
             if match:
                 ids.append(entity.id)
-        
-        self.logger.debug(f"Found {len(ids)} entities matching criteria: {ids}")
+
+        self.logger.debug(f'Found {len(ids)} entities matching criteria: {ids}')
         return ids
 
     def find_relation_ids_by_attributes(self, **attributes) -> List[str]:
         """Find relationship IDs by various attributes (exact matches only).
 
         Args:
-            **attributes: Keyword arguments for relationship attributes 
+            **attributes: Keyword arguments for relationship attributes
                          (source, target, relationType, source_name, target_name, source_id, target_id)
 
         Returns:
             List[str]: List of relationship IDs that exactly match the criteria
         """
-        self.logger.debug(f"Searching relations with attributes: {attributes}")
-        
+        self.logger.debug(f'Searching relations with attributes: {attributes}')
+
         # Load all relations and filter in memory for precise matching
         graph = self.load_graph()
-        
+
         ids = []
         for relation in graph.relations:
             if relation.id is None:
                 continue
-                
+
             match = True
             for key, value in attributes.items():
                 if key == 'relationType':
@@ -385,21 +545,25 @@ class KnowledgeGraphManager:
                         match = False
                         break
                 else:
-                    self.logger.warning(f"Unsupported relation search attribute: {key}")
+                    self.logger.warning(f'Unsupported relation search attribute: {key}')
                     match = False
                     break
-            
+
             if match:
                 ids.append(relation.id)
-        
-        self.logger.debug(f"Found {len(ids)} relations matching criteria: {ids}")
+
+        self.logger.debug(f'Found {len(ids)} relations matching criteria: {ids}')
         return ids
-
-
 
     # ID-based operations
     def create_entities_with_ids(self, entities: List[Entity]) -> List[Entity]:
         """Create new entities with auto-generated IDs if not provided.
+
+        Uses MERGE logic: ON CREATE sets all fields, ON MATCH updates last_modified and merges metadata.
+        
+        Note: Entity observations should be timestamped entries in format "YYYY-MM-DD HH:MM:SS | content"
+        containing only recent, time-sensitive information. Maximum 15 entries per entity, with
+        automatic pruning of oldest entries when limit is exceeded.
 
         Args:
             entities (List[Entity]): List of entities to create
@@ -407,24 +571,51 @@ class KnowledgeGraphManager:
         Returns:
             List[Entity]: The created entities with their IDs
         """
-        # Generate IDs for entities that don't have them
+        # Generate IDs and timestamps for entities that don't have them
+        current_time = time.time()
         for entity in entities:
             if not entity.id:
                 entity.id = str(uuid.uuid4())
-        
+            # Ensure timestamps are set
+            if not hasattr(entity, 'created_at') or entity.created_at is None:
+                entity.created_at = current_time
+            if not hasattr(entity, 'last_modified') or entity.last_modified is None:
+                entity.last_modified = current_time
+
         query = """
         UNWIND $entities as entity
-        CREATE (e:Memory)
-        SET e.id = entity.id
-        SET e.name = entity.name
-        SET e.type = entity.type
-        SET e.observations = entity.observations
+        MERGE (e:Memory {name: entity.name})
+        ON CREATE SET
+            e.id = entity.id,
+            e.type = entity.type,
+            e.created_at = entity.created_at,
+            e.last_modified = entity.last_modified,
+            e.observations = entity.observations
+        ON MATCH SET
+            e.last_modified = $now,
+            e.observations = CASE
+                WHEN entity.observations IS NOT NULL AND size(entity.observations) > 0
+                THEN [obs IN entity.observations WHERE NOT obs IN coalesce(e.observations, [])] + coalesce(e.observations, [])
+                ELSE coalesce(e.observations, [])
+            END
+        SET e += entity.metadata
         """
-        entities_data = [asdict(entity) for entity in entities]
-        self.client.query(query, parameters={"entities": entities_data}, language=QueryLanguage.OPEN_CYPHER)
+
+        # Prepare entity data with metadata
+        entities_data = []
+        for entity in entities:
+            entity_dict = asdict(entity)
+            # Ensure metadata is included
+            if 'metadata' not in entity_dict:
+                entity_dict['metadata'] = {}
+            entities_data.append(entity_dict)
+
+        self.client.query(
+            query,
+            parameters={'entities': entities_data, 'now': current_time},
+            language=QueryLanguage.OPEN_CYPHER,
+        )
         return entities
-
-
 
     def get_entity_by_id(self, entity_id: str) -> Optional[Entity]:
         """Get an entity by its ID.
@@ -438,57 +629,100 @@ class KnowledgeGraphManager:
         query = f"""
         MATCH (entity:Memory)
         WHERE entity.id = '{entity_id}'
-        RETURN entity.id as id, entity.name as name, entity.type as type, entity.observations as observations
+        RETURN entity.id as id, entity.name as name, entity.type as type, entity.observations as observations,
+               entity.created_at as created_at, entity.last_modified as last_modified,
+               properties(entity) as all_properties
         """
         resp = self.client.query(query, language=QueryLanguage.OPEN_CYPHER)
-        result = json.loads(resp)["results"]
-        
+        result = json.loads(resp)['results']
+
         if not result:
             return None
-        
+
         # Use the same parsing logic as load_graph
         for record in result:
             if isinstance(record, dict):
                 # Check for direct field access (FalkorDB format)
-                if "name" in record and "type" in record:
-                    observations = record.get("observations", [])
+                if 'name' in record and 'type' in record:
+                    observations = record.get('observations', [])
                     # Handle both list and string formats for observations
                     if isinstance(observations, str):
-                        observations = observations.split("|") if observations else []
+                        observations = observations.split('|') if observations else []
                     elif not isinstance(observations, list):
                         observations = []
-                    
+
+                    # Extract metadata from all_properties, excluding core fields
+                    all_props = record.get('all_properties', {})
+                    metadata = {}
+                    if isinstance(all_props, dict):
+                        core_fields = {
+                            'id',
+                            'name',
+                            'type',
+                            'observations',
+                            'created_at',
+                            'last_modified',
+                        }
+                        metadata = {
+                            k: v for k, v in all_props.items() if k not in core_fields
+                        }
+
                     return Entity(
-                        id=record.get("id"),
-                        name=record["name"],
-                        type=record["type"],
+                        id=record.get('id'),
+                        name=record['name'],
+                        type=record['type'],
                         observations=observations,
+                        created_at=record.get('created_at', time.time()),
+                        last_modified=record.get('last_modified', time.time()),
+                        metadata=metadata,
                     )
-                # Check for column-based format (col_0, col_1, col_2, col_3)
-                elif "col_0" in record and "col_1" in record:
-                    # col_0 = id, col_1 = name, col_2 = type, col_3 = observations
-                    entity_id_result = record.get("col_0")
-                    name = record.get("col_1")
-                    entity_type = record.get("col_2")
-                    observations = record.get("col_3", [])
-                    
+                # Check for column-based format (col_0, col_1, col_2, col_3, col_4, col_5, col_6)
+                elif 'col_0' in record and 'col_1' in record:
+                    # col_0 = id, col_1 = name, col_2 = type, col_3 = observations,
+                    # col_4 = created_at, col_5 = last_modified, col_6 = all_properties
+                    entity_id_result = record.get('col_0')
+                    name = record.get('col_1')
+                    entity_type = record.get('col_2')
+                    observations = record.get('col_3', [])
+
                     # Handle both list and string formats for observations
                     if isinstance(observations, str):
-                        observations = observations.split("|") if observations else []
+                        observations = observations.split('|') if observations else []
                     elif not isinstance(observations, list):
                         observations = []
-                    
+
+                    # Extract metadata from all_properties, excluding core fields
+                    all_props = record.get('col_6', {})
+                    metadata = {}
+                    if isinstance(all_props, dict):
+                        core_fields = {
+                            'id',
+                            'name',
+                            'type',
+                            'observations',
+                            'created_at',
+                            'last_modified',
+                        }
+                        metadata = {
+                            k: v for k, v in all_props.items() if k not in core_fields
+                        }
+
                     return Entity(
                         id=entity_id_result,
                         name=name,
                         type=entity_type,
                         observations=observations,
+                        created_at=record.get('col_4', time.time()),
+                        last_modified=record.get('col_5', time.time()),
+                        metadata=metadata,
                     )
-        
+
         return None
 
     def update_entity_by_id(self, entity_id: str, updates: Dict[str, Any]) -> bool:
         """Update any attributes of an entity by its ID.
+
+        Automatically updates the last_modified timestamp.
 
         Args:
             entity_id (str): ID of the entity to update
@@ -502,38 +736,50 @@ class KnowledgeGraphManager:
         MATCH (e:Memory { id: $entity_id })
         RETURN e.id as id
         """
-        result = self.client.query(check_query, parameters={"entity_id": entity_id}, language=QueryLanguage.OPEN_CYPHER)
+        result = self.client.query(
+            check_query,
+            parameters={'entity_id': entity_id},
+            language=QueryLanguage.OPEN_CYPHER,
+        )
         result_data = json.loads(result)
-        
-        if not result_data.get("results"):
+
+        if not result_data.get('results'):
             self.logger.warning(f"Entity with ID '{entity_id}' not found")
             return False
-        
+
         # Build the SET clause dynamically based on updates
-        set_clauses = []
-        parameters = {"entity_id": entity_id}
-        
+        set_clauses = ['e.last_modified = $now']  # Always update last_modified
+        parameters = {'entity_id': entity_id, 'now': time.time()}
+
         for key, value in updates.items():
             if key in ['name', 'type', 'observations']:
-                param_name = f"new_{key}"
-                set_clauses.append(f"e.{key} = ${param_name}")
+                param_name = f'new_{key}'
+                set_clauses.append(f'e.{key} = ${param_name}')
                 parameters[param_name] = value
+            elif key == 'metadata':
+                # Merge metadata using += operator
+                set_clauses.append('e += $new_metadata')
+                parameters['new_metadata'] = value
             else:
-                self.logger.warning(f"Unsupported update attribute: {key}")
-        
-        if not set_clauses:
-            self.logger.warning("No valid attributes to update")
+                self.logger.warning(f'Unsupported update attribute: {key}')
+
+        if len(set_clauses) == 1:  # Only last_modified update
+            self.logger.warning('No valid attributes to update')
             return False
-        
+
         update_query = f"""
         MATCH (e:Memory {{ id: $entity_id }})
         SET {', '.join(set_clauses)}
         RETURN e.id as id, e.name as name, e.type as type, e.observations as observations
         """
-        
+
         try:
-            self.client.query(update_query, parameters=parameters, language=QueryLanguage.OPEN_CYPHER)
-            self.logger.info(f"Successfully updated entity with ID '{entity_id}' with attributes: {list(updates.keys())}")
+            self.client.query(
+                update_query, parameters=parameters, language=QueryLanguage.OPEN_CYPHER
+            )
+            self.logger.info(
+                f"Successfully updated entity with ID '{entity_id}' with attributes: {list(updates.keys())}"
+            )
             return True
         except Exception as e:
             self.logger.error(f"Failed to update entity with ID '{entity_id}': {e}")
@@ -553,22 +799,32 @@ class KnowledgeGraphManager:
         MATCH (e:Memory { id: $entity_id })
         RETURN e.id as id
         """
-        result = self.client.query(check_query, parameters={"entity_id": entity_id}, language=QueryLanguage.OPEN_CYPHER)
+        result = self.client.query(
+            check_query,
+            parameters={'entity_id': entity_id},
+            language=QueryLanguage.OPEN_CYPHER,
+        )
         result_data = json.loads(result)
-        
-        if not result_data.get("results"):
+
+        if not result_data.get('results'):
             self.logger.warning(f"Entity with ID '{entity_id}' not found")
             return False
-        
+
         # Delete the entity and all its relationships
         delete_query = """
         MATCH (e:Memory { id: $entity_id })
         DETACH DELETE e
         """
-        
+
         try:
-            self.client.query(delete_query, parameters={"entity_id": entity_id}, language=QueryLanguage.OPEN_CYPHER)
-            self.logger.info(f"Successfully deleted entity with ID '{entity_id}' and all its relationships")
+            self.client.query(
+                delete_query,
+                parameters={'entity_id': entity_id},
+                language=QueryLanguage.OPEN_CYPHER,
+            )
+            self.logger.info(
+                f"Successfully deleted entity with ID '{entity_id}' and all its relationships"
+            )
             return True
         except Exception as e:
             self.logger.error(f"Failed to delete entity with ID '{entity_id}': {e}")
@@ -587,37 +843,74 @@ class KnowledgeGraphManager:
         MATCH (source:Memory)-[r:related_to]->(target:Memory)
         WHERE r.id = $relation_id
         RETURN r.id as id, source.name as source, target.name as target, r.type as relationType,
-               source.id as source_id, target.id as target_id
+               source.id as source_id, target.id as target_id, r.created_at as created_at,
+               properties(r) as all_properties
         """
-        result = self.client.query(query, parameters={"relation_id": relation_id}, language=QueryLanguage.OPEN_CYPHER)
+        result = self.client.query(
+            query,
+            parameters={'relation_id': relation_id},
+            language=QueryLanguage.OPEN_CYPHER,
+        )
         result_data = json.loads(result)
-        
-        if not result_data.get("results"):
+
+        if not result_data.get('results'):
             return None
-        
-        record = result_data["results"][0]
+
+        record = result_data['results'][0]
         # Handle different result formats
         if isinstance(record, dict):
             # Check for direct field access
-            if "id" in record and "source" in record and "target" in record and "relationType" in record:
+            if (
+                'id' in record
+                and 'source' in record
+                and 'target' in record
+                and 'relationType' in record
+            ):
+                # Extract properties from all_properties, excluding core fields
+                all_props = record.get('all_properties', {})
+                properties = {}
+                if isinstance(all_props, dict):
+                    core_fields = {'id', 'type', 'source_id', 'target_id', 'created_at'}
+                    properties = {
+                        k: v for k, v in all_props.items() if k not in core_fields
+                    }
+
                 return Relation(
-                    id=record["id"],
-                    source=record["source"],
-                    target=record["target"],
-                    relationType=record["relationType"],
-                    source_id=record.get("source_id"),
-                    target_id=record.get("target_id")
+                    id=record['id'],
+                    source=record['source'],
+                    target=record['target'],
+                    relationType=record['relationType'],
+                    source_id=record.get('source_id'),
+                    target_id=record.get('target_id'),
+                    created_at=record.get('created_at', time.time()),
+                    properties=properties,
                 )
-            # Check for column-based format (col_0, col_1, col_2, col_3, col_4, col_5)
-            elif "col_0" in record and "col_1" in record and "col_2" in record and "col_3" in record:
-                # col_0 = r.id, col_1 = source.name, col_2 = target.name, col_3 = r.type, col_4 = source.id, col_5 = target.id
+            # Check for column-based format (col_0, col_1, col_2, col_3, col_4, col_5, col_6, col_7)
+            elif (
+                'col_0' in record
+                and 'col_1' in record
+                and 'col_2' in record
+                and 'col_3' in record
+            ):
+                # col_0 = r.id, col_1 = source.name, col_2 = target.name, col_3 = r.type,
+                # col_4 = source.id, col_5 = target.id, col_6 = r.created_at, col_7 = all_properties
+                all_props = record.get('col_7', {})
+                properties = {}
+                if isinstance(all_props, dict):
+                    core_fields = {'id', 'type', 'source_id', 'target_id', 'created_at'}
+                    properties = {
+                        k: v for k, v in all_props.items() if k not in core_fields
+                    }
+
                 return Relation(
-                    id=record.get("col_0"),
-                    source=record.get("col_1"),
-                    target=record.get("col_2"),
-                    relationType=record.get("col_3"),
-                    source_id=record.get("col_4"),
-                    target_id=record.get("col_5")
+                    id=record.get('col_0'),
+                    source=record.get('col_1'),
+                    target=record.get('col_2'),
+                    relationType=record.get('col_3'),
+                    source_id=record.get('col_4'),
+                    target_id=record.get('col_5'),
+                    created_at=record.get('col_6', time.time()),
+                    properties=properties,
                 )
         return None
 
@@ -636,40 +929,65 @@ class KnowledgeGraphManager:
         MATCH (source:Memory)-[r:related_to { id: $relation_id }]->(target:Memory)
         RETURN r.id as id, source.name as source, target.name as target
         """
-        result = self.client.query(check_query, parameters={"relation_id": relation_id}, language=QueryLanguage.OPEN_CYPHER)
+        result = self.client.query(
+            check_query,
+            parameters={'relation_id': relation_id},
+            language=QueryLanguage.OPEN_CYPHER,
+        )
         result_data = json.loads(result)
-        
-        if not result_data.get("results"):
+
+        if not result_data.get('results'):
             self.logger.warning(f"Relationship with ID '{relation_id}' not found")
             return False
-        
+
         # Handle source and target updates by recreating the relationship
         if 'source' in updates or 'target' in updates:
             # Get current relationship data
-            current_rel = result_data["results"][0]
-            current_source = current_rel.get("source") or current_rel.get("col_1")
-            current_target = current_rel.get("target") or current_rel.get("col_2")
-            
-            # Get current relationship type
+            current_rel = result_data['results'][0]
+            current_source = current_rel.get('source') or current_rel.get('col_1')
+            current_target = current_rel.get('target') or current_rel.get('col_2')
+
+            # Get current relationship type and properties
             rel_query = """
             MATCH ()-[r:related_to { id: $relation_id }]->()
-            RETURN r.type as relationType
+            RETURN r.type as relationType, r.created_at as created_at, properties(r) as all_properties
             """
-            rel_result = self.client.query(rel_query, parameters={"relation_id": relation_id}, language=QueryLanguage.OPEN_CYPHER)
+            rel_result = self.client.query(
+                rel_query,
+                parameters={'relation_id': relation_id},
+                language=QueryLanguage.OPEN_CYPHER,
+            )
             rel_data = json.loads(rel_result)
-            current_rel_type = rel_data["results"][0].get("relationType") or rel_data["results"][0].get("col_0")
-            
-            # Determine new source and target
+            current_rel_type = rel_data['results'][0].get('relationType') or rel_data[
+                'results'
+            ][0].get('col_0')
+            current_created_at = rel_data['results'][0].get('created_at') or rel_data[
+                'results'
+            ][0].get('col_1')
+
+            # Extract current properties, excluding core fields
+            all_props = rel_data['results'][0].get('all_properties', {}) or rel_data[
+                'results'
+            ][0].get('col_2', {})
+            current_properties = {}
+            if isinstance(all_props, dict):
+                core_fields = {'id', 'type', 'source_id', 'target_id', 'created_at'}
+                current_properties = {
+                    k: v for k, v in all_props.items() if k not in core_fields
+                }
+
+            # Determine new values
             new_source = updates.get('source', current_source)
             new_target = updates.get('target', current_target)
             new_rel_type = updates.get('relationType', current_rel_type)
-            
+            new_properties = updates.get('properties', current_properties)
+
             # Delete old relationship and create new one
             delete_query = """
             MATCH ()-[r:related_to { id: $relation_id }]->()
             DELETE r
             """
-            
+
             create_query = """
             MATCH (from:Memory { name: $source }), (to:Memory { name: $target })
             CREATE (from)-[r:related_to]->(to)
@@ -677,55 +995,85 @@ class KnowledgeGraphManager:
             SET r.type = $relationType
             SET r.source_id = from.id
             SET r.target_id = to.id
+            SET r.created_at = $created_at
+            SET r += $properties
             """
-            
+
             try:
                 # Delete old relationship
-                self.client.query(delete_query, parameters={"relation_id": relation_id}, language=QueryLanguage.OPEN_CYPHER)
-                
+                self.client.query(
+                    delete_query,
+                    parameters={'relation_id': relation_id},
+                    language=QueryLanguage.OPEN_CYPHER,
+                )
+
                 # Create new relationship
-                self.client.query(create_query, parameters={
-                    "relation_id": relation_id,
-                    "source": new_source,
-                    "target": new_target,
-                    "relationType": new_rel_type
-                }, language=QueryLanguage.OPEN_CYPHER)
-                
-                self.logger.info(f"Successfully updated relationship with ID '{relation_id}' with attributes: {list(updates.keys())}")
+                self.client.query(
+                    create_query,
+                    parameters={
+                        'relation_id': relation_id,
+                        'source': new_source,
+                        'target': new_target,
+                        'relationType': new_rel_type,
+                        'created_at': current_created_at or time.time(),
+                        'properties': new_properties,
+                    },
+                    language=QueryLanguage.OPEN_CYPHER,
+                )
+
+                self.logger.info(
+                    f"Successfully updated relationship with ID '{relation_id}' with attributes: {list(updates.keys())}"
+                )
                 return True
             except Exception as e:
-                self.logger.error(f"Failed to update relationship with ID '{relation_id}': {e}")
+                self.logger.error(
+                    f"Failed to update relationship with ID '{relation_id}': {e}"
+                )
                 return False
-        
-        # Handle simple attribute updates (relationType only)
+
+        # Handle simple attribute updates (relationType and properties)
         else:
             set_clauses = []
-            parameters = {"relation_id": relation_id}
-            
+            parameters = {'relation_id': relation_id}
+
             for key, value in updates.items():
                 if key == 'relationType':
-                    param_name = f"new_{key}"
-                    set_clauses.append(f"r.type = ${param_name}")
+                    param_name = f'new_{key}'
+                    set_clauses.append(f'r.type = ${param_name}')
                     parameters[param_name] = value
+                elif key == 'properties':
+                    # Merge properties using += operator
+                    set_clauses.append('r += $new_properties')
+                    parameters['new_properties'] = value
                 else:
-                    self.logger.warning(f"Unsupported relationship update attribute: {key}")
-            
+                    self.logger.warning(
+                        f'Unsupported relationship update attribute: {key}'
+                    )
+
             if not set_clauses:
-                self.logger.warning("No valid relationship attributes to update")
+                self.logger.warning('No valid relationship attributes to update')
                 return False
-            
+
             update_query = f"""
             MATCH ()-[r:related_to {{ id: $relation_id }}]->()
             SET {', '.join(set_clauses)}
             RETURN r.id as id, r.type as relationType
             """
-            
+
             try:
-                self.client.query(update_query, parameters=parameters, language=QueryLanguage.OPEN_CYPHER)
-                self.logger.info(f"Successfully updated relationship with ID '{relation_id}' with attributes: {list(updates.keys())}")
+                self.client.query(
+                    update_query,
+                    parameters=parameters,
+                    language=QueryLanguage.OPEN_CYPHER,
+                )
+                self.logger.info(
+                    f"Successfully updated relationship with ID '{relation_id}' with attributes: {list(updates.keys())}"
+                )
                 return True
             except Exception as e:
-                self.logger.error(f"Failed to update relationship with ID '{relation_id}': {e}")
+                self.logger.error(
+                    f"Failed to update relationship with ID '{relation_id}': {e}"
+                )
                 return False
 
     def delete_relation_by_id(self, relation_id: str) -> bool:
@@ -742,23 +1090,35 @@ class KnowledgeGraphManager:
         MATCH ()-[r:related_to { id: $relation_id }]->()
         RETURN r.id as id
         """
-        result = self.client.query(check_query, parameters={"relation_id": relation_id}, language=QueryLanguage.OPEN_CYPHER)
+        result = self.client.query(
+            check_query,
+            parameters={'relation_id': relation_id},
+            language=QueryLanguage.OPEN_CYPHER,
+        )
         result_data = json.loads(result)
-        
-        if not result_data.get("results"):
+
+        if not result_data.get('results'):
             self.logger.warning(f"Relationship with ID '{relation_id}' not found")
             return False
-        
+
         # Delete the specific relationship
         delete_query = """
         MATCH ()-[r:related_to { id: $relation_id }]->()
         DELETE r
         """
-        
+
         try:
-            self.client.query(delete_query, parameters={"relation_id": relation_id}, language=QueryLanguage.OPEN_CYPHER)
-            self.logger.info(f"Successfully deleted relationship with ID '{relation_id}'")
+            self.client.query(
+                delete_query,
+                parameters={'relation_id': relation_id},
+                language=QueryLanguage.OPEN_CYPHER,
+            )
+            self.logger.info(
+                f"Successfully deleted relationship with ID '{relation_id}'"
+            )
             return True
         except Exception as e:
-            self.logger.error(f"Failed to delete relationship with ID '{relation_id}': {e}")
+            self.logger.error(
+                f"Failed to delete relationship with ID '{relation_id}': {e}"
+            )
             return False
