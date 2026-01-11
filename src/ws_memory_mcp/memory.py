@@ -37,6 +37,13 @@ from ws_memory_mcp.models import (
     QueryLanguage,
     Relation,
 )
+from ws_memory_mcp.neptune import NeptuneServer, EngineType
+
+try:
+    from sentence_transformers import SentenceTransformer
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
 
 
 class KnowledgeGraphManager:
@@ -60,6 +67,76 @@ class KnowledgeGraphManager:
         """
         self.client = client
         self.logger = logger
+        
+        # Initialize vector search components
+        self.embedding_model = None
+        self.is_neptune_analytics = False
+        self.vector_search_enabled = False
+        
+        # Detect backend type and initialize vector search
+        if isinstance(client, NeptuneServer) and client._engine_type == EngineType.ANALYTICS:
+            self.is_neptune_analytics = True
+        
+        # Initialize sentence transformer if available
+        if SENTENCE_TRANSFORMERS_AVAILABLE:
+            try:
+                self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+                self.vector_search_enabled = True
+                self.logger.info("Vector search enabled with all-MiniLM-L6-v2 model")
+                
+                # Ensure vector index exists
+                self._ensure_vector_index()
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize vector search: {e}")
+                self.vector_search_enabled = False
+        else:
+            self.logger.warning("sentence-transformers not available, vector search disabled")
+
+    def _compute_embedding(self, text: str) -> List[float]:
+        """Compute embedding for a text string.
+
+        Args:
+            text (str): Text to encode
+
+        Returns:
+            List[float]: Vector embedding (384 dimensions)
+        """
+        if not self.embedding_model:
+            return []
+        
+        try:
+            embedding = self.embedding_model.encode(text)
+            return embedding.tolist()
+        except Exception as e:
+            self.logger.warning(f"Failed to compute embedding: {e}")
+            return []
+
+    def _ensure_vector_index(self):
+        """Ensure vector index exists for the backend."""
+        if not self.vector_search_enabled:
+            return
+            
+        try:
+            if self.is_neptune_analytics:
+                # Neptune Analytics: Vector indexes are defined at graph creation time
+                self.logger.info("Neptune Analytics detected - vector indexes should be defined at graph creation")
+            else:
+                # FalkorDB: Create vector index dynamically
+                index_query = """
+                CREATE VECTOR INDEX FOR (m:Memory) ON (m.embedding)
+                OPTIONS {dimension: 384, similarityFunction: 'cosine'}
+                """
+                try:
+                    self.client.query(index_query, language=QueryLanguage.OPEN_CYPHER)
+                    self.logger.info("Created vector index for Memory nodes")
+                except Exception as e:
+                    # Index might already exist, which is fine
+                    if "already exists" in str(e).lower() or "equivalent index" in str(e).lower():
+                        self.logger.debug("Vector index already exists")
+                    else:
+                        self.logger.warning(f"Failed to create vector index: {e}")
+        except Exception as e:
+            self.logger.warning(f"Error ensuring vector index: {e}")
 
     def load_graph(self, filter_query=None) -> KnowledgeGraph:
         """Load the knowledge graph with optional filtering.
@@ -130,15 +207,16 @@ class KnowledgeGraphManager:
                             name=record['name'],
                             type=record['type'],
                             observations=observations,
+                            embedding=[],  # Don't expose embeddings to LLM
                             created_at=record.get('created_at', time.time()),
                             last_modified=record.get('last_modified', time.time()),
                             metadata=metadata,
                         )
                     )
-                # Check for column-based format (col_0, col_1, col_2, col_3, col_4, col_5, col_6)
+                # Check for column-based format (col_0, col_1, col_2, col_3, col_4, col_5, col_6, col_7)
                 elif 'col_0' in record and 'col_1' in record:
                     # col_0 = id, col_1 = name, col_2 = type, col_3 = observations,
-                    # col_4 = created_at, col_5 = last_modified, col_6 = all_properties
+                    # col_4 = created_at, col_5 = last_modified, col_6 = embedding, col_7 = all_properties
                     entity_id = record.get('col_0')
                     name = record.get('col_1')
                     entity_type = record.get('col_2')
@@ -151,7 +229,7 @@ class KnowledgeGraphManager:
                         observations = []
 
                     # Extract metadata from all_properties, excluding core fields
-                    all_props = record.get('col_6', {})
+                    all_props = record.get('col_7', {})
                     metadata = {}
                     if isinstance(all_props, dict):
                         core_fields = {
@@ -172,6 +250,7 @@ class KnowledgeGraphManager:
                             name=name,
                             type=entity_type,
                             observations=observations,
+                            embedding=[],  # Don't expose embeddings to LLM
                             created_at=record.get('col_4', time.time()),
                             last_modified=record.get('col_5', time.time()),
                             metadata=metadata,
@@ -212,6 +291,7 @@ class KnowledgeGraphManager:
                             name=record['name'],
                             type=record.get('type', 'Unknown'),
                             observations=observations,
+                            embedding=[],  # Don't expose embeddings to LLM
                             created_at=record.get('created_at', time.time()),
                             last_modified=record.get('last_modified', time.time()),
                             metadata=metadata,
@@ -1015,8 +1095,10 @@ class KnowledgeGraphManager:
     def search_nodes(self, query: str, depth: int = 0) -> KnowledgeGraph:
         """Search for nodes in the knowledge graph by name with depth control.
 
+        Uses vector search when available, falls back to string matching.
+
         Args:
-            query (str): Search query string (searches entity names only, not observations)
+            query (str): Search query string (searches entity names and content semantically)
             depth (int): Maximum depth for relationship traversal (default: 1, max: 2)
 
         Returns:
@@ -1035,6 +1117,14 @@ class KnowledgeGraphManager:
         elif depth > 2:
             depth = 2
 
+        # Try vector search first if available
+        if self.vector_search_enabled:
+            try:
+                return self._vector_search_nodes(query, depth)
+            except Exception as e:
+                self.logger.warning(f"Vector search failed, falling back to string search: {e}")
+
+        # Fallback to string-based search
         if depth == 0:
             # For depth 0, only return matching entities without relations
             result = self.load_graph(filter_query=query)
@@ -1047,6 +1137,170 @@ class KnowledgeGraphManager:
             f'Search found {len(result.entities)} entities and {len(result.relations)} relations with depth {depth}'
         )
         return result
+
+    def _vector_search_nodes(self, query: str, depth: int = 0) -> KnowledgeGraph:
+        """Perform vector-based semantic search for nodes.
+
+        Args:
+            query (str): Search query string
+            depth (int): Maximum depth for relationship traversal
+
+        Returns:
+            KnowledgeGraph: Graph containing semantically similar nodes and their relations
+        """
+        # Generate embedding for the query
+        query_embedding = self._compute_embedding(query)
+        if not query_embedding:
+            raise Exception("Failed to generate query embedding")
+
+        # Execute vector search based on backend
+        if self.is_neptune_analytics:
+            # Neptune Analytics vector search
+            vector_query = """
+            CALL neptune.algo.vectors.topKByEmbedding($embedding, 5) YIELD node, score
+            RETURN node.id as id, node.name as name, node.type as type, node.observations as observations,
+                   node.created_at as created_at, node.last_modified as last_modified,
+                   properties(node) as all_properties, score
+            """
+        else:
+            # FalkorDB vector search
+            vector_query = """
+            CALL db.idx.vector.queryNodes('Memory', 'embedding', 5, vecf32($embedding)) YIELD node, score
+            RETURN node.id as id, node.name as name, node.type as type, node.observations as observations,
+                   node.created_at as created_at, node.last_modified as last_modified,
+                   properties(node) as all_properties, score
+            """
+
+        resp = self.client.query(
+            vector_query,
+            parameters={'embedding': query_embedding},
+            language=QueryLanguage.OPEN_CYPHER,
+        )
+        result = json.loads(resp)['results']
+
+        entities = []
+        entity_names = set()
+
+        for record in result:
+            if isinstance(record, dict):
+                # Handle direct field access
+                if 'name' in record and 'type' in record:
+                    observations = record.get('observations', [])
+                    if isinstance(observations, str):
+                        observations = observations.split('|') if observations else []
+                    elif not isinstance(observations, list):
+                        observations = []
+
+                    # Extract metadata from all_properties, excluding core fields
+                    all_props = record.get('all_properties', {})
+                    metadata = {}
+                    if isinstance(all_props, dict):
+                        core_fields = {
+                            'id', 'name', 'type', 'observations', 'created_at', 'last_modified'
+                        }
+                        metadata = {k: v for k, v in all_props.items() if k not in core_fields}
+
+                    # Add score to metadata
+                    score = record.get('score', 0.0)
+                    metadata['vector_search_score'] = score
+
+                    entity = Entity(
+                        id=record.get('id'),
+                        name=record['name'],
+                        type=record['type'],
+                        observations=observations,
+                        embedding=[],  # Don't expose embeddings to LLM
+                        created_at=record.get('created_at', time.time()),
+                        last_modified=record.get('last_modified', time.time()),
+                        metadata=metadata,
+                    )
+                    entities.append(entity)
+                    entity_names.add(entity.name)
+
+                # Handle column-based format
+                elif 'col_0' in record and 'col_1' in record:
+                    # Columns: id, name, type, observations, created_at, last_modified, embedding, all_properties, score
+                    observations = record.get('col_3', [])
+                    if isinstance(observations, str):
+                        observations = observations.split('|') if observations else []
+                    elif not isinstance(observations, list):
+                        observations = []
+
+                    all_props = record.get('col_7', {})
+                    metadata = {}
+                    if isinstance(all_props, dict):
+                        core_fields = {
+                            'id', 'name', 'type', 'observations', 'created_at', 'last_modified'
+                        }
+                        metadata = {k: v for k, v in all_props.items() if k not in core_fields}
+
+                    # Add score to metadata
+                    score = record.get('col_8', 0.0)
+                    metadata['vector_search_score'] = score
+
+                    entity = Entity(
+                        id=record.get('col_0'),
+                        name=record.get('col_1'),
+                        type=record.get('col_2'),
+                        observations=observations,
+                        embedding=[],  # Don't expose embeddings to LLM
+                        created_at=record.get('col_4', time.time()),
+                        last_modified=record.get('col_5', time.time()),
+                        metadata=metadata,
+                    )
+                    entities.append(entity)
+                    entity_names.add(entity.name)
+
+        # If depth is 0, return only entities
+        if depth == 0:
+            self.logger.debug(f'Vector search found {len(entities)} entities with depth 0')
+            return KnowledgeGraph(entities=entities, relations=[])
+
+        # For depth > 0, get relations between found entities
+        if not entity_names:
+            return KnowledgeGraph(entities=[], relations=[])
+
+        # Get relations between the found entities
+        relation_query = """
+        MATCH (source:Memory)-[r:related_to]->(target:Memory)
+        WHERE source.name IN $entity_names AND target.name IN $entity_names
+        RETURN r.id as id, source.name as source, target.name as target, r.type as relationType,
+               source.id as source_id, target.id as target_id, r.created_at as created_at,
+               properties(r) as all_properties
+        """
+
+        resp = self.client.query(
+            relation_query,
+            parameters={'entity_names': list(entity_names)},
+            language=QueryLanguage.OPEN_CYPHER,
+        )
+
+        result = json.loads(resp)['results']
+        rels = []
+        for record in result:
+            if isinstance(record, dict):
+                if 'source' in record and 'target' in record and 'relationType' in record:
+                    all_props = record.get('all_properties', {})
+                    properties = {}
+                    if isinstance(all_props, dict):
+                        core_fields = {'id', 'type', 'source_id', 'target_id', 'created_at'}
+                        properties = {k: v for k, v in all_props.items() if k not in core_fields}
+
+                    rels.append(
+                        Relation(
+                            id=record.get('id'),
+                            source=record['source'],
+                            target=record['target'],
+                            relationType=record['relationType'],
+                            source_id=record.get('source_id'),
+                            target_id=record.get('target_id'),
+                            created_at=record.get('created_at', time.time()),
+                            properties=properties,
+                        )
+                    )
+
+        self.logger.debug(f'Vector search found {len(entities)} entities and {len(rels)} relations with depth {depth}')
+        return KnowledgeGraph(entities=entities, relations=rels)
 
     def find_entity_ids_by_name(self, name: str) -> List[str]:
         """Find entity IDs by name (exact match only).
@@ -1196,7 +1450,7 @@ class KnowledgeGraphManager:
         Returns:
             List[Entity]: The created entities with their IDs
         """
-        # Generate IDs and timestamps for entities that don't have them
+        # Generate IDs, timestamps, and embeddings for entities that don't have them
         current_time = time.time()
         for entity in entities:
             if not entity.id:
@@ -1206,25 +1460,70 @@ class KnowledgeGraphManager:
                 entity.created_at = current_time
             if not hasattr(entity, 'last_modified') or entity.last_modified is None:
                 entity.last_modified = current_time
+            
+            # Generate embedding if not present and vector search is enabled
+            if self.vector_search_enabled and not entity.embedding:
+                # Combine name, type, and observations for embedding
+                text_for_embedding = f"{entity.name} {entity.type}"
+                if entity.observations:
+                    # Take first few observations to avoid too long text
+                    obs_text = " ".join(entity.observations[:3])
+                    text_for_embedding += f" {obs_text}"
+                
+                entity.embedding = self._compute_embedding(text_for_embedding)
 
-        query = """
-        UNWIND $entities as entity
-        MERGE (e:Memory {name: entity.name})
-        ON CREATE SET
-            e.id = entity.id,
-            e.type = entity.type,
-            e.created_at = entity.created_at,
-            e.last_modified = entity.last_modified,
-            e.observations = entity.observations
-        ON MATCH SET
-            e.last_modified = $now,
-            e.observations = CASE
-                WHEN entity.observations IS NOT NULL AND size(entity.observations) > 0
-                THEN [obs IN entity.observations WHERE NOT obs IN coalesce(e.observations, [])] + coalesce(e.observations, [])
-                ELSE coalesce(e.observations, [])
-            END
-        SET e += entity.metadata
-        """
+        if self.is_neptune_analytics:
+            # Neptune Analytics: Use vector upsert
+            query = """
+            UNWIND $entities as entity
+            MERGE (e:Memory {name: entity.name})
+            ON CREATE SET
+                e.id = entity.id,
+                e.type = entity.type,
+                e.created_at = entity.created_at,
+                e.last_modified = entity.last_modified,
+                e.observations = entity.observations
+            ON MATCH SET
+                e.last_modified = $now,
+                e.observations = CASE
+                    WHEN entity.observations IS NOT NULL AND size(entity.observations) > 0
+                    THEN [obs IN entity.observations WHERE NOT obs IN coalesce(e.observations, [])] + coalesce(e.observations, [])
+                    ELSE coalesce(e.observations, [])
+                END
+            SET e += entity.metadata
+            WITH e, entity
+            CALL neptune.algo.vectors.upsert(e, entity.embedding)
+            """
+        else:
+            # FalkorDB: Set embedding directly
+            query = """
+            UNWIND $entities as entity
+            MERGE (e:Memory {name: entity.name})
+            ON CREATE SET
+                e.id = entity.id,
+                e.type = entity.type,
+                e.created_at = entity.created_at,
+                e.last_modified = entity.last_modified,
+                e.observations = entity.observations,
+                e.embedding = CASE 
+                    WHEN entity.embedding IS NOT NULL AND size(entity.embedding) > 0 
+                    THEN vecf32(entity.embedding) 
+                    ELSE null 
+                END
+            ON MATCH SET
+                e.last_modified = $now,
+                e.observations = CASE
+                    WHEN entity.observations IS NOT NULL AND size(entity.observations) > 0
+                    THEN [obs IN entity.observations WHERE NOT obs IN coalesce(e.observations, [])] + coalesce(e.observations, [])
+                    ELSE coalesce(e.observations, [])
+                END,
+                e.embedding = CASE 
+                    WHEN entity.embedding IS NOT NULL AND size(entity.embedding) > 0 
+                    THEN vecf32(entity.embedding) 
+                    ELSE e.embedding 
+                END
+            SET e += entity.metadata
+            """
 
         # Prepare entity data with metadata
         entities_data = []

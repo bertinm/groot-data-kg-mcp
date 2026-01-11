@@ -122,6 +122,7 @@ class Entity:
                                  Each observation must be formatted as "YYYY-MM-DD HH:MM:SS | content"
                                  and contain ONLY recent, time-sensitive information (not relationships
                                  or static facts). Maximum 15 entries, auto-pruned when exceeded.
+        embedding (List[float]): Vector embedding for semantic search (384 dimensions)
         id (str, optional): Unique identifier for the entity (auto-generated if not provided)
         created_at (float): System timestamp when entity was created
         last_modified (float): System timestamp when entity was last modified
@@ -131,6 +132,7 @@ class Entity:
     name: str
     type: str
     observations: List[str]
+    embedding: List[float] = field(default_factory=list)
     id: str = None
     created_at: float = field(default_factory=time.time)
     last_modified: float = field(default_factory=time.time)

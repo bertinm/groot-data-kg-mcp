@@ -1,13 +1,15 @@
 [project]
 name = "ws-memory-mcp-server"
 version = "0.0.9"
-description = "This is an MCP server that allows users for a persistent memory knowledge graph using Amazon Neptune or FalkorDB"
+description = "This is an MCP server that provides persistent memory knowledge graph using Amazon Neptune or FalkorDB with semantic vector search capabilities"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "langchain-aws>=0.2.19",
     "mcp[cli]>=1.6.0",
     "falkordb>=1.0.9",
+    "sentence-transformers>=2.2.2",
+    "numpy>=1.26.0",
 ]
 
 [project.scripts]

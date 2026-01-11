@@ -83,7 +83,7 @@ def register_tools_for_mode(mcp_instance, mode: str):
         )(read_memory)
         mcp_instance.tool(
             name='search_memory',
-            description='Search/discover entities in the knowledge graph by name to get their IDs',
+            description='Search/discover entities in the knowledge graph using semantic vector search. Uses AI embeddings to find conceptually related entities, not just keyword matches. Automatically falls back to string matching if vector search is unavailable.',
         )(search_memory)
         mcp_instance.tool(
             name='get_entity_by_id', description='Get an entity by its unique ID'
@@ -115,7 +115,7 @@ def register_tools_for_mode(mcp_instance, mode: str):
     if mode in ['write', 'full']:
         mcp_instance.tool(
             name='create_entities',
-            description='Create multiple new entities in the knowledge graph',
+            description='Create multiple new entities in the knowledge graph. Automatically generates semantic embeddings for vector search from entity name, type, and observations.',
         )(create_entities)
         mcp_instance.tool(
             name='create_relations',
@@ -151,8 +151,13 @@ def get_status() -> str:
 def create_entities(entities: List[Entity]) -> str:
     """Create multiple new entities in the knowledge graph.
 
+    Automatically generates semantic embeddings for vector search from entity name, type, 
+    and observations. These embeddings enable intelligent semantic search capabilities.
+
     Args:
         entities (List[Entity]): A list of Entity objects to be created in the graph.
+                               Each entity will have vector embeddings automatically generated
+                               for semantic search functionality.
 
     Returns:
         str: Confirmation message indicating the result of the operation.
@@ -283,17 +288,24 @@ def read_full_graph() -> dict:
 
 
 def search_memory(query: str) -> dict:
-    """Search for entities in the memory knowledge graph by name to discover their IDs.
+    """Search for entities in the memory knowledge graph using semantic vector search.
+
+    This tool uses AI embeddings to find conceptually related entities, not just keyword matches.
+    For example, searching for "neural networks" will find entities about "machine learning" and "AI".
+    Automatically falls back to string matching if vector search is unavailable.
 
     This tool is for discovery - use it to find entity IDs, then use read_memory to explore
     the graph starting from those entities.
 
     Args:
-        query (str): The search query string to match against entity names only (not observations).
-                    Empty queries return no results.
+        query (str): The search query string. Can be conceptual (e.g., "artificial intelligence", 
+                    "cooking recipes") or specific terms. The system will find semantically 
+                    related entities using vector embeddings.
 
     Returns:
-        dict: A dictionary containing matching entities with their IDs for use with read_memory.
+        dict: A dictionary containing matching entities ranked by semantic similarity, 
+              with their IDs for use with read_memory. May include vector_search_score 
+              in metadata when available.
     """
     if not query or query.strip() == '':
         return {
