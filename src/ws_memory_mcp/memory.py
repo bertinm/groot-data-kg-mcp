@@ -1646,7 +1646,8 @@ class KnowledgeGraphManager:
     def update_entity_by_id(self, entity_id: str, updates: Dict[str, Any]) -> bool:
         """Update any attributes of an entity by its ID.
 
-        Automatically updates the last_modified timestamp.
+        Automatically updates the last_modified timestamp and regenerates embeddings
+        if any embedding-relevant attributes (name, type, observations) are updated.
 
         Args:
             entity_id (str): ID of the entity to update
@@ -1655,10 +1656,10 @@ class KnowledgeGraphManager:
         Returns:
             bool: True if the update was successful, False otherwise
         """
-        # First check if the entity exists
+        # First check if the entity exists and get current values
         check_query = """
         MATCH (e:Memory { id: $entity_id })
-        RETURN e.id as id
+        RETURN e.id as id, e.name as name, e.type as type, e.observations as observations
         """
         result = self.client.query(
             check_query,
@@ -1671,15 +1672,43 @@ class KnowledgeGraphManager:
             self.logger.warning(f"Entity with ID '{entity_id}' not found")
             return False
 
+        # Get current entity data
+        current_entity = result_data['results'][0]
+        current_name = current_entity.get('name', '')
+        current_type = current_entity.get('type', '')
+        current_observations = current_entity.get('observations', [])
+        
+        # Handle observations format
+        if isinstance(current_observations, str):
+            current_observations = current_observations.split('|') if current_observations else []
+        elif not isinstance(current_observations, list):
+            current_observations = []
+
         # Build the SET clause dynamically based on updates
         set_clauses = ['e.last_modified = $now']  # Always update last_modified
         parameters = {'entity_id': entity_id, 'now': time.time()}
+
+        # Check if embedding-relevant attributes are being updated
+        embedding_relevant_update = False
+        updated_name = current_name
+        updated_type = current_type
+        updated_observations = current_observations
 
         for key, value in updates.items():
             if key in ['name', 'type', 'observations']:
                 param_name = f'new_{key}'
                 set_clauses.append(f'e.{key} = ${param_name}')
                 parameters[param_name] = value
+                embedding_relevant_update = True
+                
+                # Track updated values for embedding generation
+                if key == 'name':
+                    updated_name = value
+                elif key == 'type':
+                    updated_type = value
+                elif key == 'observations':
+                    updated_observations = value if isinstance(value, list) else [value] if value else []
+                    
             elif key == 'metadata':
                 # Merge metadata using += operator
                 set_clauses.append('e += $new_metadata')
@@ -1691,6 +1720,28 @@ class KnowledgeGraphManager:
             self.logger.warning('No valid attributes to update')
             return False
 
+        # Generate new embedding if embedding-relevant attributes were updated and vector search is enabled
+        if embedding_relevant_update and self.vector_search_enabled:
+            # Combine updated name, type, and observations for embedding
+            text_for_embedding = f"{updated_name} {updated_type}"
+            if updated_observations:
+                # Take first few observations to avoid too long text
+                obs_text = " ".join(updated_observations[:3])
+                text_for_embedding += f" {obs_text}"
+            
+            new_embedding = self._compute_embedding(text_for_embedding)
+            
+            if new_embedding:
+                if self.is_neptune_analytics:
+                    # Neptune Analytics: Use vector upsert after the main update
+                    parameters['new_embedding'] = new_embedding
+                else:
+                    # FalkorDB: Set embedding directly in the same query
+                    set_clauses.append('e.embedding = $new_embedding')
+                    parameters['new_embedding'] = new_embedding
+                
+                self.logger.debug(f"Generated new embedding for entity '{entity_id}' due to attribute updates")
+
         update_query = f"""
         MATCH (e:Memory {{ id: $entity_id }})
         SET {', '.join(set_clauses)}
@@ -1698,11 +1749,27 @@ class KnowledgeGraphManager:
         """
 
         try:
+            # Execute the main update
             self.client.query(
                 update_query, parameters=parameters, language=QueryLanguage.OPEN_CYPHER
             )
+            
+            # For Neptune Analytics, perform vector upsert separately
+            if embedding_relevant_update and self.vector_search_enabled and self.is_neptune_analytics and 'new_embedding' in parameters:
+                vector_upsert_query = """
+                MATCH (e:Memory { id: $entity_id })
+                CALL neptune.algo.vectors.upsert(e, $new_embedding)
+                """
+                self.client.query(
+                    vector_upsert_query,
+                    parameters={'entity_id': entity_id, 'new_embedding': parameters['new_embedding']},
+                    language=QueryLanguage.OPEN_CYPHER
+                )
+                self.logger.debug(f"Updated vector embedding for entity '{entity_id}' in Neptune Analytics")
+            
             self.logger.info(
                 f"Successfully updated entity with ID '{entity_id}' with attributes: {list(updates.keys())}"
+                + (" (embedding regenerated)" if embedding_relevant_update and self.vector_search_enabled else "")
             )
             return True
         except Exception as e:

@@ -123,7 +123,7 @@ def register_tools_for_mode(mcp_instance, mode: str):
         )(create_relations)
         mcp_instance.tool(
             name='update_entity_by_id',
-            description='Update any attributes of an entity by its unique ID',
+            description='Update any attributes of an entity by its unique ID. Automatically regenerates semantic embeddings when name, type, or observations are updated to maintain vector search accuracy.',
         )(update_entity_by_id)
         mcp_instance.tool(
             name='delete_entity_by_id',
@@ -358,6 +358,9 @@ def get_entity_by_id(entity_id: str) -> dict:
 
 def update_entity_by_id(entity_id: str, updates: dict) -> str:
     """Update any attributes of an entity by its unique ID.
+
+    Automatically regenerates semantic embeddings when embedding-relevant attributes 
+    (name, type, observations) are updated to ensure vector search accuracy.
 
     Args:
         entity_id (str): Unique ID of the entity to update
