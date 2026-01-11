@@ -183,7 +183,7 @@ def read_memory(entity_ids: List[str], depth: int = 1) -> dict:
 
     Args:
         entity_ids (List[str]): List of entity IDs to start traversal from (get these from search_memory)
-        depth (int): Maximum depth for relationship traversal (default: 1, max: 5).
+        depth (int): Maximum depth for relationship traversal (default: 1, max: 2).
                     Depth 1 returns only direct neighbors, depth 2 includes neighbors of neighbors, etc.
 
     Returns:
@@ -192,8 +192,8 @@ def read_memory(entity_ids: List[str], depth: int = 1) -> dict:
     # Validate and constrain depth for MCP tool usage
     if depth < 1:
         depth = 1
-    elif depth > 5:
-        depth = 5
+    elif depth > 2:
+        depth = 2
 
     if not entity_ids:
         return {
@@ -303,37 +303,19 @@ def search_memory(query: str) -> dict:
             'message': 'Empty query provided. Provide a search term to find entities.',
         }
 
-    # Use depth=1 for search to get basic entity info and immediate connections for context
-    graph = memory.search_nodes(query.strip(), depth=1)
+    # Use depth=0 for search to get only basic entity info for discovery
+    graph = memory.search_nodes(query.strip(), depth=0)
     return {
         'entities': [
             {
+                'id': getattr(e, 'id', None),
                 'name': e.name,
                 'type': e.type,
-                'observations': e.observations,
-                'id': getattr(e, 'id', None),
-                'created_at': getattr(e, 'created_at', None),
-                'last_modified': getattr(e, 'last_modified', None),
-                'metadata': getattr(e, 'metadata', {}),
             }
             for e in graph.entities
         ],
-        'relations': [
-            {
-                'source': r.source,
-                'target': r.target,
-                'relationType': r.relationType,
-                'id': getattr(r, 'id', None),
-                'source_id': getattr(r, 'source_id', None),
-                'target_id': getattr(r, 'target_id', None),
-                'created_at': getattr(r, 'created_at', None),
-                'properties': getattr(r, 'properties', {}),
-            }
-            for r in graph.relations
-        ],
         'query_used': query.strip(),
         'total_entities': len(graph.entities),
-        'total_relations': len(graph.relations),
         'message': f'Found {len(graph.entities)} entities matching "{query.strip()}". Use their IDs with read_memory to explore further.',
     }
 

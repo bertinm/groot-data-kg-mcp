@@ -410,7 +410,7 @@ class KnowledgeGraphManager:
         Depth control is implemented at the Cypher query level for efficiency.
 
         Args:
-            depth (int): Maximum depth for relationship traversal (default: 1, max: 5)
+            depth (int): Maximum depth for relationship traversal (default: 1, max: 2)
             filter_query (str, optional): Query string to filter entities by name
 
         Returns:
@@ -419,8 +419,8 @@ class KnowledgeGraphManager:
         # Validate depth parameter
         if depth < 1:
             depth = 1
-        elif depth > 5:
-            depth = 5
+        elif depth > 2:
+            depth = 2
 
         self.logger.debug(
             f"Reading graph with depth {depth} and filter '{filter_query}'"
@@ -747,7 +747,7 @@ class KnowledgeGraphManager:
 
         Args:
             entity_ids (List[str]): List of entity IDs to start traversal from
-            depth (int): Maximum depth for relationship traversal (default: 1, max: 5)
+            depth (int): Maximum depth for relationship traversal (default: 1, max: 2)
 
         Returns:
             KnowledgeGraph: Graph containing entities and relations within the specified depth from starting entities
@@ -755,8 +755,8 @@ class KnowledgeGraphManager:
         # Validate depth parameter
         if depth < 1:
             depth = 1
-        elif depth > 5:
-            depth = 5
+        elif depth > 2:
+            depth = 2
 
         if not entity_ids:
             self.logger.warning('No entity IDs provided, returning empty graph')
@@ -1012,12 +1012,12 @@ class KnowledgeGraphManager:
         )
         return KnowledgeGraph(entities=entities, relations=rels)
 
-    def search_nodes(self, query: str, depth: int = 1) -> KnowledgeGraph:
+    def search_nodes(self, query: str, depth: int = 0) -> KnowledgeGraph:
         """Search for nodes in the knowledge graph by name with depth control.
 
         Args:
             query (str): Search query string (searches entity names only, not observations)
-            depth (int): Maximum depth for relationship traversal (default: 1, max: 5)
+            depth (int): Maximum depth for relationship traversal (default: 1, max: 2)
 
         Returns:
             KnowledgeGraph: Graph containing matching nodes and their relations within specified depth
@@ -1029,13 +1029,20 @@ class KnowledgeGraphManager:
             self.logger.debug('Empty query provided, returning empty results')
             return KnowledgeGraph(entities=[], relations=[])
 
-        # Validate depth parameter
-        if depth < 1:
-            depth = 1
-        elif depth > 5:
-            depth = 5
+        # Validate depth parameter - allow 0 for entity-only search
+        if depth < 0:
+            depth = 0
+        elif depth > 2:
+            depth = 2
 
-        result = self.read_graph_with_depth(depth=depth, filter_query=query)
+        if depth == 0:
+            # For depth 0, only return matching entities without relations
+            result = self.load_graph(filter_query=query)
+            # Return only entities, no relations
+            return KnowledgeGraph(entities=result.entities, relations=[])
+        else:
+            result = self.read_graph_with_depth(depth=depth, filter_query=query)
+        
         self.logger.debug(
             f'Search found {len(result.entities)} entities and {len(result.relations)} relations with depth {depth}'
         )
