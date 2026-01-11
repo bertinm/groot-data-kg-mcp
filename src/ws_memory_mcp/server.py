@@ -34,22 +34,111 @@ logger = logging.getLogger(__name__)
 # Global variables for graph database connection (will be initialized in main)
 graph = None
 memory = None
+server_mode = 'full'  # Global flag for server mode: 'read', 'write', or 'full'
 
 
-mcp = FastMCP(
-    'Memory',
-    instructions="""
-    This provides access to a memory for an agentic workflow stored in a graph database (Neptune or FalkorDB).
-    """,
-    dependencies=[
-        'langchain-aws',
-        'mcp[cli]',
-        'falkordb',
-    ],
-)
+def create_mcp_server(mode: str = 'full'):
+    """Create MCP server with mode-specific tool registration.
+
+    Args:
+        mode (str): Server mode - 'read', 'write', or 'full'
+    """
+    global server_mode
+    server_mode = mode
+
+    mode_descriptions = {
+        'read': 'This provides read-only access to a memory for an agentic workflow stored in a graph database (Neptune or FalkorDB).',
+        'write': 'This provides write-only access to a memory for an agentic workflow stored in a graph database (Neptune or FalkorDB).',
+        'full': 'This provides full access to a memory for an agentic workflow stored in a graph database (Neptune or FalkorDB).',
+    }
+
+    return FastMCP(
+        'Memory',
+        instructions=mode_descriptions.get(mode, mode_descriptions['full']),
+        dependencies=[
+            'langchain-aws',
+            'mcp[cli]',
+            'falkordb',
+        ],
+    )
 
 
-@mcp.tool(name='get_memory_server_status')
+# Initialize with default mode (will be recreated in main with proper mode)
+mcp = create_mcp_server('full')
+
+
+def register_tools_for_mode(mcp_instance, mode: str):
+    """Register tools based on the server mode.
+
+    Args:
+        mcp_instance: FastMCP instance to register tools on
+        mode (str): Server mode - 'read', 'write', or 'full'
+    """
+    # Read-only tools (available in 'read' and 'full' modes)
+    if mode in ['read', 'full']:
+        mcp_instance.tool(name='get_server_status')(get_status)
+        mcp_instance.tool(
+            name='read_memory',
+            description='Read/traverse the knowledge graph starting from specific entity IDs with depth control',
+        )(read_memory)
+        mcp_instance.tool(
+            name='search_memory',
+            description='Search/discover entities in the knowledge graph by name to get their IDs',
+        )(search_memory)
+        mcp_instance.tool(
+            name='get_entity_by_id', description='Get an entity by its unique ID'
+        )(get_entity_by_id)
+        mcp_instance.tool(
+            name='get_relation_by_id', description='Get a relationship by its unique ID'
+        )(get_relation_by_id)
+        mcp_instance.tool(
+            name='find_entity_ids_by_name',
+            description='Find entity IDs by name - useful for identifying entities before updates/deletes',
+        )(find_entity_ids_by_name)
+        mcp_instance.tool(
+            name='find_entity_ids_by_attributes',
+            description='Find entity IDs by various attributes - useful for complex entity identification',
+        )(find_entity_ids_by_attributes)
+        mcp_instance.tool(
+            name='find_relation_ids_by_attributes',
+            description='Find relationship IDs by attributes - useful for identifying relationships before updates/deletes',
+        )(find_relation_ids_by_attributes)
+
+    # Full access tools (only available in 'full' mode)
+    if mode == 'full':
+        mcp_instance.tool(
+            name='read_full_memory',
+            description='Read the entire knowledge graph without depth restrictions (for internal use), very expensive.',
+        )(read_full_graph)
+
+    # Write-only tools (only available in 'write' and 'full' modes)
+    if mode in ['write', 'full']:
+        mcp_instance.tool(
+            name='create_entities',
+            description='Create multiple new entities in the knowledge graph',
+        )(create_entities)
+        mcp_instance.tool(
+            name='create_relations',
+            description='Create multiple new relations between entities in the knowledge graph. Relations should be in active voice',
+        )(create_relations)
+        mcp_instance.tool(
+            name='update_entity_by_id',
+            description='Update any attributes of an entity by its unique ID',
+        )(update_entity_by_id)
+        mcp_instance.tool(
+            name='delete_entity_by_id',
+            description='Delete an entity by its unique ID and all its relationships',
+        )(delete_entity_by_id)
+        mcp_instance.tool(
+            name='update_relation_by_id',
+            description='Update attributes of a relationship by its unique ID',
+        )(update_relation_by_id)
+        mcp_instance.tool(
+            name='delete_relation_by_id',
+            description='Delete a relationship by its unique ID',
+        )(delete_relation_by_id)
+
+
 def get_status() -> str:
     """Retrieve the current status of the graph database memory server.
 
@@ -59,10 +148,6 @@ def get_status() -> str:
     return graph.status()
 
 
-@mcp.tool(
-    name='create_entities',
-    description='Create multiple new entities in the knowledge graph',
-)
 def create_entities(entities: List[Entity]) -> str:
     """Create multiple new entities in the knowledge graph.
 
@@ -76,10 +161,6 @@ def create_entities(entities: List[Entity]) -> str:
     return f'Successfully created {len(result)} entities.'
 
 
-@mcp.tool(
-    name='create_relations',
-    description='Create multiple new relations between entities in the knowledge graph. Relations should be in active voice',
-)
 def create_relations(relations: List[Relation]) -> str:
     """Create multiple new relations between entities in the knowledge graph.
 
@@ -94,14 +175,38 @@ def create_relations(relations: List[Relation]) -> str:
     return f'Successfully created {len(result)} relations.'
 
 
-@mcp.tool(name='read_memory', description='Read the memory knowledge graph')
-def read_graph() -> dict:
-    """Read the entire memory knowledge graph.
+def read_memory(entity_ids: List[str], depth: int = 1) -> dict:
+    """Read/traverse the memory knowledge graph starting from specific entity IDs.
+
+    This tool is for navigation - use search_memory first to find entity IDs, then use this tool
+    to explore the graph starting from those entities.
+
+    Args:
+        entity_ids (List[str]): List of entity IDs to start traversal from (get these from search_memory)
+        depth (int): Maximum depth for relationship traversal (default: 1, max: 5).
+                    Depth 1 returns only direct neighbors, depth 2 includes neighbors of neighbors, etc.
 
     Returns:
-        dict: A dictionary containing all entities and relations in the memory graph.
+        dict: A dictionary containing entities and relations within the specified depth from starting entities.
     """
-    graph = memory.read_graph()
+    # Validate and constrain depth for MCP tool usage
+    if depth < 1:
+        depth = 1
+    elif depth > 5:
+        depth = 5
+
+    if not entity_ids:
+        return {
+            'entities': [],
+            'relations': [],
+            'starting_entity_ids': [],
+            'depth_used': depth,
+            'total_entities': 0,
+            'total_relations': 0,
+            'error': 'No entity IDs provided. Use search_memory first to find entity IDs.',
+        }
+
+    graph = memory.read_graph_from_entities(entity_ids, depth=depth)
     return {
         'entities': [
             {
@@ -128,24 +233,78 @@ def read_graph() -> dict:
             }
             for r in graph.relations
         ],
+        'starting_entity_ids': entity_ids,
+        'depth_used': depth,
+        'total_entities': len(graph.entities),
+        'total_relations': len(graph.relations),
     }
 
 
-@mcp.tool(
-    name='search_memory',
-    description='Search the memory knowledge graph for a specific entity name',
-)
-def search_graph(query: str) -> dict:
-    """Search the memory knowledge graph for entities matching a specific name.
+def read_full_graph() -> dict:
+    """Read the entire memory knowledge graph without depth restrictions.
+
+    This tool is intended for internal function calls that need access to the complete graph.
+    For regular usage, use read_memory with appropriate depth control.
+
+    Returns:
+        dict: A dictionary containing all entities and relations in the memory graph.
+    """
+    graph = memory.read_graph()  # Uses the original method without depth restrictions
+    return {
+        'entities': [
+            {
+                'name': e.name,
+                'type': e.type,
+                'observations': e.observations,
+                'id': getattr(e, 'id', None),
+                'created_at': getattr(e, 'created_at', None),
+                'last_modified': getattr(e, 'last_modified', None),
+                'metadata': getattr(e, 'metadata', {}),
+            }
+            for e in graph.entities
+        ],
+        'relations': [
+            {
+                'source': r.source,
+                'target': r.target,
+                'relationType': r.relationType,
+                'id': getattr(r, 'id', None),
+                'source_id': getattr(r, 'source_id', None),
+                'target_id': getattr(r, 'target_id', None),
+                'created_at': getattr(r, 'created_at', None),
+                'properties': getattr(r, 'properties', {}),
+            }
+            for r in graph.relations
+        ],
+        'depth_used': 'unlimited',
+        'total_entities': len(graph.entities),
+        'total_relations': len(graph.relations),
+    }
+
+
+def search_memory(query: str) -> dict:
+    """Search for entities in the memory knowledge graph by name to discover their IDs.
+
+    This tool is for discovery - use it to find entity IDs, then use read_memory to explore
+    the graph starting from those entities.
 
     Args:
         query (str): The search query string to match against entity names only (not observations).
                     Empty queries return no results.
 
     Returns:
-        dict: A dictionary containing the matching entities and their relations.
+        dict: A dictionary containing matching entities with their IDs for use with read_memory.
     """
-    graph = memory.search_nodes(query)
+    if not query or query.strip() == '':
+        return {
+            'entities': [],
+            'query_used': query,
+            'total_entities': 0,
+            'message': 'Empty query provided. Provide a search term to find entities.',
+        }
+
+    # Use depth=1 for search to get basic entity info and immediate connections for context
+    graph = memory.search_nodes(query.strip(), depth=1)
     return {
         'entities': [
             {
@@ -172,11 +331,13 @@ def search_graph(query: str) -> dict:
             }
             for r in graph.relations
         ],
+        'query_used': query.strip(),
+        'total_entities': len(graph.entities),
+        'total_relations': len(graph.relations),
+        'message': f'Found {len(graph.entities)} entities matching "{query.strip()}". Use their IDs with read_memory to explore further.',
     }
 
 
-# ID-based operations
-@mcp.tool(name='get_entity_by_id', description='Get an entity by its unique ID')
 def get_entity_by_id(entity_id: str) -> dict:
     """Get an entity by its unique ID.
 
@@ -201,10 +362,6 @@ def get_entity_by_id(entity_id: str) -> dict:
         return {'error': f"Entity with ID '{entity_id}' not found"}
 
 
-@mcp.tool(
-    name='update_entity_by_id',
-    description='Update any attributes of an entity by its unique ID',
-)
 def update_entity_by_id(entity_id: str, updates: dict) -> str:
     """Update any attributes of an entity by its unique ID.
 
@@ -227,10 +384,6 @@ def update_entity_by_id(entity_id: str, updates: dict) -> str:
         return f"Failed to update entity with ID '{entity_id}'. Entity may not exist or invalid attributes provided."
 
 
-@mcp.tool(
-    name='delete_entity_by_id',
-    description='Delete an entity by its unique ID and all its relationships',
-)
 def delete_entity_by_id(entity_id: str) -> str:
     """Delete an entity by its unique ID and all its relationships.
 
@@ -247,7 +400,6 @@ def delete_entity_by_id(entity_id: str) -> str:
         return f"Failed to delete entity with ID '{entity_id}'. Entity may not exist."
 
 
-@mcp.tool(name='get_relation_by_id', description='Get a relationship by its unique ID')
 def get_relation_by_id(relation_id: str) -> dict:
     """Get a relationship by its unique ID.
 
@@ -273,10 +425,6 @@ def get_relation_by_id(relation_id: str) -> dict:
         return {'error': f"Relationship with ID '{relation_id}' not found"}
 
 
-@mcp.tool(
-    name='update_relation_by_id',
-    description='Update attributes of a relationship by its unique ID',
-)
 def update_relation_by_id(relation_id: str, updates: dict) -> str:
     """Update attributes of a relationship by its unique ID.
 
@@ -297,9 +445,6 @@ def update_relation_by_id(relation_id: str, updates: dict) -> str:
         return f"Failed to update relationship with ID '{relation_id}'. Relationship may not exist or invalid attributes provided."
 
 
-@mcp.tool(
-    name='delete_relation_by_id', description='Delete a relationship by its unique ID'
-)
 def delete_relation_by_id(relation_id: str) -> str:
     """Delete a relationship by its unique ID.
 
@@ -316,11 +461,6 @@ def delete_relation_by_id(relation_id: str) -> str:
         return f"Failed to delete relationship with ID '{relation_id}'. Relationship may not exist."
 
 
-# ID lookup and smart operations
-@mcp.tool(
-    name='find_entity_ids_by_name',
-    description='Find entity IDs by name - useful for identifying entities before updates/deletes',
-)
 def find_entity_ids_by_name(name: str) -> dict:
     """Find entity IDs by exact name match.
 
@@ -338,10 +478,6 @@ def find_entity_ids_by_name(name: str) -> dict:
     }
 
 
-@mcp.tool(
-    name='find_entity_ids_by_attributes',
-    description='Find entity IDs by various attributes - useful for complex entity identification',
-)
 def find_entity_ids_by_attributes(attributes: str) -> dict:
     """Find entity IDs by various attributes (exact matches only).
 
@@ -375,10 +511,6 @@ def find_entity_ids_by_attributes(attributes: str) -> dict:
         return {'error': f'Search failed: {str(e)}'}
 
 
-@mcp.tool(
-    name='find_relation_ids_by_attributes',
-    description='Find relationship IDs by attributes - useful for identifying relationships before updates/deletes',
-)
 def find_relation_ids_by_attributes(attributes: str) -> dict:
     """Find relationship IDs by various attributes (exact matches only).
 
@@ -495,9 +627,10 @@ def main():
     This function initializes and runs the Model Context Protocol server,
     supporting both SSE (Server-Sent Events) and default transport options.
     Command line arguments can be used to configure the server port,
-    transport method, database backend, and logging level.
+    transport method, database backend, server mode, and logging level.
 
     Command line arguments:
+        --mode: Server mode (read, write, or full, default: full)
         --sse: Enable SSE transport
         --port: Specify the port number (default: 8888)
         --backend: Database backend (neptune or falkordb, default: neptune)
@@ -516,7 +649,7 @@ def main():
 
         --log-level: Set logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
     """
-    global graph, memory
+    global graph, memory, mcp
 
     parser = argparse.ArgumentParser(
         description='A Model Context Protocol (MCP) server'
@@ -524,6 +657,13 @@ def main():
     parser.add_argument('--sse', action='store_true', help='Use SSE transport')
     parser.add_argument(
         '--port', type=int, default=8888, help='Port to run the server on'
+    )
+    parser.add_argument(
+        '--mode',
+        type=str,
+        choices=['read', 'write', 'full'],
+        default='full',
+        help='Server mode: read (read-only tools), write (write-only tools), or full (all tools, default: full)',
     )
     parser.add_argument(
         '--backend',
@@ -583,6 +723,14 @@ def main():
 
     # Configure logging first
     configure_logging(args.log_level, args.log_file)
+
+    # Create MCP server with the specified mode
+    mcp = create_mcp_server(args.mode)
+
+    # Register tools based on the mode
+    register_tools_for_mode(mcp, args.mode)
+
+    logger.info(f'Starting MCP server in {args.mode} mode')
 
     # Initialize graph database connection based on backend
     if args.backend == 'neptune':

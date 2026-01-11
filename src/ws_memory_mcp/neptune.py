@@ -44,9 +44,10 @@ class EngineType(Enum):
         DATABASE: Neptune Database instance
         UNKNOWN: Unidentified engine type
     """
-    ANALYTICS = "analytics"
-    DATABASE = "database"
-    UNKNOWN = "unknown"
+
+    ANALYTICS = 'analytics'
+    DATABASE = 'database'
+    UNKNOWN = 'unknown'
 
 
 class NeptuneServer(GraphServer):
@@ -82,27 +83,25 @@ class NeptuneServer(GraphServer):
             ValueError: If endpoint is not provided or has invalid format
         """
         if endpoint:
-            self._logger.debug("NeptuneServer host: %s", endpoint)
-            if endpoint.startswith("neptune-db://"):
+            self._logger.debug('NeptuneServer host: %s', endpoint)
+            if endpoint.startswith('neptune-db://'):
                 # This is a Neptune Database Cluster
-                endpoint = endpoint.replace(
-                    "neptune-db://", ""
-                )
+                endpoint = endpoint.replace('neptune-db://', '')
                 self.graph = NeptuneGraph(endpoint, port, use_https=use_https)
                 self._engine_type = EngineType.DATABASE
-                self._logger.debug("Creating Neptune Database session for %s", endpoint)
-            elif endpoint.startswith("neptune-graph://"):
+                self._logger.debug('Creating Neptune Database session for %s', endpoint)
+            elif endpoint.startswith('neptune-graph://'):
                 # This is a Neptune Analytics Graph
-                graphId = endpoint.replace("neptune-graph://", "")
+                graphId = endpoint.replace('neptune-graph://', '')
                 self.graph = NeptuneAnalyticsGraph(graphId)
                 self._engine_type = EngineType.ANALYTICS
-                self._logger.debug("Creating Neptune Graph session for %s", endpoint)
+                self._logger.debug('Creating Neptune Graph session for %s', endpoint)
             else:
                 raise ValueError(
-                    "You must provide an endpoint to create a NeptuneServer as either neptune-db://<endpoint> or neptune-graph://<graphid>"
+                    'You must provide an endpoint to create a NeptuneServer as either neptune-db://<endpoint> or neptune-graph://<graphid>'
                 )
         else:
-            raise ValueError("You must provide an endpoint to create a NeptuneServer")
+            raise ValueError('You must provide an endpoint to create a NeptuneServer')
 
     def close(self):
         """Close the connection to the Neptune instance."""
@@ -118,12 +117,12 @@ class NeptuneServer(GraphServer):
             AttributeError: If engine type is unknown
         """
         if self._engine_type == EngineType.UNKNOWN:
-            raise AttributeError("Engine type is unknown so we cannot fetch the schema")
+            raise AttributeError('Engine type is unknown so we cannot fetch the schema')
         try:
-            self.query("RETURN 1", QueryLanguage.OPEN_CYPHER)
-            return "Available"
+            self.query('RETURN 1', QueryLanguage.OPEN_CYPHER)
+            return 'Available'
         except Exception:
-            return "Unavailable"
+            return 'Unavailable'
 
     def schema(self) -> GraphSchema:
         """Retrieve the schema information from the Neptune instance.
@@ -140,7 +139,9 @@ class NeptuneServer(GraphServer):
             case EngineType.ANALYTICS:
                 return self._schema_analytics()
             case __:
-                raise AttributeError("Engine type is unknown so we cannot fetch the schema")
+                raise AttributeError(
+                    'Engine type is unknown so we cannot fetch the schema'
+                )
 
     def query(self, query: str, language: QueryLanguage, parameters: map = None) -> str:
         """Execute a query against the Neptune instance.
@@ -161,10 +162,10 @@ class NeptuneServer(GraphServer):
             return self._query_database(query, language, parameters)
         elif self._engine_type == EngineType.ANALYTICS:
             if language != QueryLanguage.OPEN_CYPHER:
-                raise ValueError("Only openCypher is supported for analytics queries")
+                raise ValueError('Only openCypher is supported for analytics queries')
             return self._query_analytics(query, parameters)
         else:
-            raise AttributeError("Engine type is unknown so we cannot query")
+            raise AttributeError('Engine type is unknown so we cannot query')
 
     def _query_analytics(self, query: str, parameters: dict = None):
         """Execute a query against a Neptune Analytics instance.
@@ -180,22 +181,22 @@ class NeptuneServer(GraphServer):
             Exception: If query execution fails
         """
         try:
-            self._logger.debug("Querying graph %s", self.graph.graph_identifier)
+            self._logger.debug('Querying graph %s', self.graph.graph_identifier)
             if parameters:
                 resp = self.graph.client.execute_query(
                     graphIdentifier=self.graph.graph_identifier,
                     queryString=query,
                     parameters=parameters,
-                    language="OPEN_CYPHER",
+                    language='OPEN_CYPHER',
                 )
             else:
                 resp = self.graph.client.execute_query(
                     graphIdentifier=self.graph.graph_identifier,
                     queryString=query,
-                    language="OPEN_CYPHER",
+                    language='OPEN_CYPHER',
                 )
-            if resp["ResponseMetadata"]["HTTPStatusCode"] == 200:
-                return resp["payload"].read().decode("UTF-8")
+            if resp['ResponseMetadata']['HTTPStatusCode'] == 200:
+                return resp['payload'].read().decode('UTF-8')
             else:
                 self._logger.debug(resp)
                 raise Exception
@@ -228,16 +229,18 @@ class NeptuneServer(GraphServer):
                         parameters=json.dumps(parameters),
                     )
                 else:
-                    resp = self.graph.client.execute_open_cypher_query(openCypherQuery=query)
+                    resp = self.graph.client.execute_open_cypher_query(
+                        openCypherQuery=query
+                    )
             elif language == QueryLanguage.GREMLIN:
                 resp = self.graph.client.execute_gremlin_query(
                     gremlinQuery=query,
-                    serializer="application/vnd.gremlin-v3.0+json;types=false"
+                    serializer='application/vnd.gremlin-v3.0+json;types=false',
                 )
             else:
-                raise ValueError("Unsupported language")
-            if resp["ResponseMetadata"]["HTTPStatusCode"] == 200:
-                return resp["result"] if "result" in resp else resp["results"]
+                raise ValueError('Unsupported language')
+            if resp['ResponseMetadata']['HTTPStatusCode'] == 200:
+                return resp['result'] if 'result' in resp else resp['results']
         except Exception as e:
             self._logger.debug(e)
             raise e
@@ -254,40 +257,34 @@ class NeptuneServer(GraphServer):
         RETURN schema
         """
 
-        data = json.loads(self.query(pg_schema_query, language=QueryLanguage.OPEN_CYPHER))
-        raw_schema = data['results'][0]["schema"]
+        data = json.loads(
+            self.query(pg_schema_query, language=QueryLanguage.OPEN_CYPHER)
+        )
+        raw_schema = data['results'][0]['schema']
         graph = GraphSchema(nodes=[], relationships=[], relationship_patterns=[])
 
-        for i in raw_schema["labelTriples"]:
+        for i in raw_schema['labelTriples']:
             graph.relationship_patterns.append(
                 RelationshipPattern(
-                    left_node=i['~from'],
-                    relation=i['~type'],
-                    right_node=i['~to']
+                    left_node=i['~from'], relation=i['~type'], right_node=i['~to']
                 )
             )
 
-        for l in raw_schema["nodeLabels"]:
-            details = raw_schema["nodeLabelDetails"][l]
+        for l in raw_schema['nodeLabels']:
+            details = raw_schema['nodeLabelDetails'][l]
             props = []
-            for p in details["properties"]:
+            for p in details['properties']:
                 props.append(
-                    Property(
-                        name=p,
-                        type=details["properties"][p]['datatypes']
-                    )
+                    Property(name=p, type=details['properties'][p]['datatypes'])
                 )
             graph.nodes.append(Node(labels=l, properties=props))
 
-        for l in raw_schema["edgeLabels"]:
-            details = raw_schema["edgeLabelDetails"][l]
+        for l in raw_schema['edgeLabels']:
+            details = raw_schema['edgeLabelDetails'][l]
             props = []
-            for p in details["properties"]:
+            for p in details['properties']:
                 props.append(
-                    Property(
-                        name=p,
-                        type=details["properties"][p]['datatypes']
-                    )
+                    Property(name=p, type=details['properties'][p]['datatypes'])
                 )
             graph.relationships.append(Relationship(type=l, properties=props))
 
@@ -300,12 +297,12 @@ class NeptuneServer(GraphServer):
             GraphSchema: Complete schema information for the database graph
         """
         types = {
-            "str": "STRING",
-            "float": "DOUBLE",
-            "int": "INTEGER",
-            "list": "LIST",
-            "dict": "MAP",
-            "bool": "BOOLEAN",
+            'str': 'STRING',
+            'float': 'DOUBLE',
+            'int': 'INTEGER',
+            'list': 'LIST',
+            'dict': 'MAP',
+            'bool': 'BOOLEAN',
         }
 
         n_labels, e_labels = self.graph._get_labels()
@@ -317,32 +314,29 @@ class NeptuneServer(GraphServer):
 
         for i in triple_schema:
             i = (
-                i.replace("(:`", "")
-                .replace("`)", "")
-                .replace("[:`", "")
-                .replace("`]", "")
-                .replace(">", "")
+                i.replace('(:`', '')
+                .replace('`)', '')
+                .replace('[:`', '')
+                .replace('`]', '')
+                .replace('>', '')
             )
-            parts = i.split("-")
+            parts = i.split('-')
             graph.relationship_patterns.append(
                 RelationshipPattern(
-                    left_node=parts[0],
-                    relation=parts[1],
-                    right_node=parts[2]
+                    left_node=parts[0], relation=parts[1], right_node=parts[2]
                 )
             )
 
         for i in node_properties:
             props = []
-            for p in i["properties"]:
+            for p in i['properties']:
                 props.append(Property(name=p['property'], type=p['type']))
             graph.nodes.append(Node(labels=i['labels'], properties=props))
 
         for i in edge_properties:
             props = []
-            for p in i["properties"]:
+            for p in i['properties']:
                 props.append(Property(name=p['property'], type=p['type']))
             graph.relationships.append(Relationship(type=i['type'], properties=props))
 
         return asdict(graph)
-

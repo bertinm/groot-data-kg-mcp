@@ -51,17 +51,17 @@ class FalkorDBServer(GraphServer):
     _logger: logging.Logger = logging.getLogger()
     client = None
     graph = None
-    graph_name: str = "memory"
+    graph_name: str = 'memory'
 
     def __init__(
-        self, 
-        host: str = "localhost", 
-        port: int = 6379, 
+        self,
+        host: str = 'localhost',
+        port: int = 6379,
         password: str = None,
-        graph_name: str = "memory",
+        graph_name: str = 'memory',
         ssl: bool = False,
-        *args, 
-        **kwargs
+        *args,
+        **kwargs,
     ):
         """Initialize a connection to a FalkorDB instance.
 
@@ -79,23 +79,19 @@ class FalkorDBServer(GraphServer):
         """
         try:
             self.graph_name = graph_name
-            self._logger.debug("FalkorDBServer connecting to %s:%s", host, port)
-            
+            self._logger.debug('FalkorDBServer connecting to %s:%s', host, port)
+
             # Initialize FalkorDB client
             self.client = FalkorDB(
-                host=host,
-                port=port,
-                password=password,
-                ssl=ssl,
-                **kwargs
+                host=host, port=port, password=password, ssl=ssl, **kwargs
             )
-            
+
             # Select the graph
             self.graph = self.client.select_graph(graph_name)
-            self._logger.debug("Connected to FalkorDB graph: %s", graph_name)
-            
+            self._logger.debug('Connected to FalkorDB graph: %s', graph_name)
+
         except Exception as e:
-            self._logger.error("Failed to connect to FalkorDB: %s", e)
+            self._logger.error('Failed to connect to FalkorDB: %s', e)
             raise e
 
     def close(self):
@@ -114,11 +110,11 @@ class FalkorDBServer(GraphServer):
         """
         try:
             # Simple query to test connectivity
-            self.graph.query("RETURN 1")
-            return "Available"
+            self.graph.query('RETURN 1')
+            return 'Available'
         except Exception as e:
-            self._logger.debug("FalkorDB status check failed: %s", e)
-            return "Unavailable"
+            self._logger.debug('FalkorDB status check failed: %s', e)
+            return 'Unavailable'
 
     def schema(self) -> GraphSchema:
         """Retrieve the schema information from the FalkorDB instance.
@@ -128,58 +124,64 @@ class FalkorDBServer(GraphServer):
         """
         try:
             # Get node labels and their properties
-            nodes_result = self.graph.query("CALL db.labels() YIELD label RETURN label")
+            nodes_result = self.graph.query('CALL db.labels() YIELD label RETURN label')
             node_labels = [record[0] for record in nodes_result.result_set]
-            
+
             # Get relationship types
-            rels_result = self.graph.query("CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType")
+            rels_result = self.graph.query(
+                'CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType'
+            )
             rel_types = [record[0] for record in rels_result.result_set]
-            
+
             # Build schema
             nodes = []
             relationships = []
             relationship_patterns = []
-            
+
             # For each node label, get its properties
             for label in node_labels:
                 try:
                     # Get property keys for this label
-                    props_query = f"MATCH (n:{label}) UNWIND keys(n) AS key RETURN DISTINCT key, apoc.meta.type(n[key]) AS type LIMIT 100"
+                    props_query = f'MATCH (n:{label}) UNWIND keys(n) AS key RETURN DISTINCT key, apoc.meta.type(n[key]) AS type LIMIT 100'
                     try:
                         props_result = self.graph.query(props_query)
                         properties = [
-                            Property(name=record[0], type=record[1]) 
+                            Property(name=record[0], type=record[1])
                             for record in props_result.result_set
                         ]
-                    except:
+                    except Exception:
                         # Fallback if APOC is not available
-                        props_query = f"MATCH (n:{label}) UNWIND keys(n) AS key RETURN DISTINCT key LIMIT 100"
+                        props_query = f'MATCH (n:{label}) UNWIND keys(n) AS key RETURN DISTINCT key LIMIT 100'
                         props_result = self.graph.query(props_query)
                         properties = [
-                            Property(name=record[0], type="STRING") 
+                            Property(name=record[0], type='STRING')
                             for record in props_result.result_set
                         ]
-                    
+
                     nodes.append(Node(labels=label, properties=properties))
                 except Exception as e:
-                    self._logger.debug(f"Could not get properties for label {label}: {e}")
+                    self._logger.debug(
+                        f'Could not get properties for label {label}: {e}'
+                    )
                     nodes.append(Node(labels=label, properties=[]))
-            
+
             # For each relationship type, get its properties and patterns
             for rel_type in rel_types:
                 try:
                     # Get property keys for this relationship type
-                    props_query = f"MATCH ()-[r:{rel_type}]-() UNWIND keys(r) AS key RETURN DISTINCT key LIMIT 100"
+                    props_query = f'MATCH ()-[r:{rel_type}]-() UNWIND keys(r) AS key RETURN DISTINCT key LIMIT 100'
                     props_result = self.graph.query(props_query)
                     properties = [
-                        Property(name=record[0], type="STRING") 
+                        Property(name=record[0], type='STRING')
                         for record in props_result.result_set
                     ]
-                    
-                    relationships.append(Relationship(type=rel_type, properties=properties))
-                    
+
+                    relationships.append(
+                        Relationship(type=rel_type, properties=properties)
+                    )
+
                     # Get relationship patterns
-                    pattern_query = f"MATCH (a)-[r:{rel_type}]->(b) RETURN DISTINCT labels(a)[0] AS from_label, labels(b)[0] AS to_label LIMIT 100"
+                    pattern_query = f'MATCH (a)-[r:{rel_type}]->(b) RETURN DISTINCT labels(a)[0] AS from_label, labels(b)[0] AS to_label LIMIT 100'
                     pattern_result = self.graph.query(pattern_query)
                     for record in pattern_result.result_set:
                         if record[0] and record[1]:  # Ensure labels exist
@@ -187,27 +189,33 @@ class FalkorDBServer(GraphServer):
                                 RelationshipPattern(
                                     left_node=record[0],
                                     relation=rel_type,
-                                    right_node=record[1]
+                                    right_node=record[1],
                                 )
                             )
                 except Exception as e:
-                    self._logger.debug(f"Could not get properties for relationship {rel_type}: {e}")
+                    self._logger.debug(
+                        f'Could not get properties for relationship {rel_type}: {e}'
+                    )
                     relationships.append(Relationship(type=rel_type, properties=[]))
-            
+
             schema = GraphSchema(
                 nodes=nodes,
                 relationships=relationships,
-                relationship_patterns=relationship_patterns
+                relationship_patterns=relationship_patterns,
             )
-            
-            return asdict(schema)
-            
-        except Exception as e:
-            self._logger.error("Failed to retrieve schema: %s", e)
-            # Return empty schema on error
-            return asdict(GraphSchema(nodes=[], relationships=[], relationship_patterns=[]))
 
-    def query(self, query: str, language: QueryLanguage, parameters: dict = None) -> str:
+            return asdict(schema)
+
+        except Exception as e:
+            self._logger.error('Failed to retrieve schema: %s', e)
+            # Return empty schema on error
+            return asdict(
+                GraphSchema(nodes=[], relationships=[], relationship_patterns=[])
+            )
+
+    def query(
+        self, query: str, language: QueryLanguage, parameters: dict = None
+    ) -> str:
         """Execute a query against the FalkorDB instance.
 
         Args:
@@ -223,17 +231,17 @@ class FalkorDBServer(GraphServer):
             Exception: If query execution fails
         """
         if language != QueryLanguage.OPEN_CYPHER:
-            raise ValueError("FalkorDB only supports OpenCypher queries")
-        
+            raise ValueError('FalkorDB only supports OpenCypher queries')
+
         try:
-            self._logger.debug("Executing FalkorDB query: %s", query)
-            
+            self._logger.debug('Executing FalkorDB query: %s', query)
+
             # Execute query with parameters if provided
             if parameters:
                 result = self.graph.query(query, params=parameters)
             else:
                 result = self.graph.query(query)
-            
+
             # Convert result to JSON format similar to Neptune
             results = []
             if result.result_set:
@@ -271,10 +279,10 @@ class FalkorDBServer(GraphServer):
                             results.append(vars(record))
                         else:
                             results.append(record)
-            
+
             # Return in Neptune-compatible format
-            return json.dumps({"results": results})
-            
+            return json.dumps({'results': results})
+
         except Exception as e:
-            self._logger.error("FalkorDB query failed: %s", e)
+            self._logger.error('FalkorDB query failed: %s', e)
             raise e

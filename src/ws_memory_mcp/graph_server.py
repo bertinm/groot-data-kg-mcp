@@ -23,7 +23,7 @@ from ws_memory_mcp.models import GraphSchema, QueryLanguage
 
 class GraphServer(ABC):
     """Abstract base class for graph database servers.
-    
+
     This class defines the interface that all graph database implementations
     should follow to ensure compatibility with the memory management system.
     """
@@ -52,7 +52,9 @@ class GraphServer(ABC):
         pass
 
     @abstractmethod
-    def query(self, query: str, language: QueryLanguage, parameters: dict = None) -> str:
+    def query(
+        self, query: str, language: QueryLanguage, parameters: dict = None
+    ) -> str:
         """Execute a query against the graph database instance.
 
         Args:

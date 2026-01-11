@@ -401,25 +401,643 @@ class KnowledgeGraphManager:
         """
         return self.load_graph()
 
-    def search_nodes(self, query: str) -> KnowledgeGraph:
-        """Search for nodes in the knowledge graph by name only.
+    def read_graph_with_depth(
+        self, depth: int = 1, filter_query: str = None
+    ) -> KnowledgeGraph:
+        """Read the knowledge graph with depth control.
+
+        Retrieves entities and their relationships up to a specified depth.
+        Depth control is implemented at the Cypher query level for efficiency.
+
+        Args:
+            depth (int): Maximum depth for relationship traversal (default: 1, max: 5)
+            filter_query (str, optional): Query string to filter entities by name
+
+        Returns:
+            KnowledgeGraph: Graph containing entities and relations within the specified depth
+        """
+        # Validate depth parameter
+        if depth < 1:
+            depth = 1
+        elif depth > 5:
+            depth = 5
+
+        self.logger.debug(
+            f"Reading graph with depth {depth} and filter '{filter_query}'"
+        )
+
+        # Build the entity query with depth control
+        if filter_query:
+            # Start with filtered entities and expand to specified depth
+            entity_query = f"""
+            MATCH path = (start:Memory)-[*0..{depth}]-(connected:Memory)
+            WHERE toLower(start.name) CONTAINS toLower($filter)
+            WITH DISTINCT connected as entity
+            RETURN entity.id as id, entity.name as name, entity.type as type, entity.observations as observations,
+                   entity.created_at as created_at, entity.last_modified as last_modified,
+                   properties(entity) as all_properties
+            """
+        else:
+            # For no filter, we still need to limit the scope somehow
+            # We'll get all entities but this will be the same as load_graph for depth > 1
+            entity_query = """
+            MATCH (entity:Memory)
+            RETURN entity.id as id, entity.name as name, entity.type as type, entity.observations as observations,
+                   entity.created_at as created_at, entity.last_modified as last_modified,
+                   properties(entity) as all_properties
+            """
+
+        resp = self.client.query(
+            entity_query,
+            parameters={'filter': filter_query} if filter_query else {},
+            language=QueryLanguage.OPEN_CYPHER,
+        )
+        result = json.loads(resp)['results']
+
+        entities = []
+        entity_names = set()  # Track entity names for relation filtering
+
+        for record in result:
+            # Handle different result formats from different backends (same logic as load_graph)
+            if isinstance(record, dict):
+                # Check for direct field access (FalkorDB format)
+                if 'name' in record and 'type' in record:
+                    observations = record.get('observations', [])
+                    # Handle both list and string formats for observations
+                    if isinstance(observations, str):
+                        observations = observations.split('|') if observations else []
+                    elif not isinstance(observations, list):
+                        observations = []
+
+                    # Extract metadata from all_properties, excluding core fields
+                    all_props = record.get('all_properties', {})
+                    metadata = {}
+                    if isinstance(all_props, dict):
+                        core_fields = {
+                            'id',
+                            'name',
+                            'type',
+                            'observations',
+                            'created_at',
+                            'last_modified',
+                        }
+                        metadata = {
+                            k: v for k, v in all_props.items() if k not in core_fields
+                        }
+
+                    entity = Entity(
+                        id=record.get('id'),
+                        name=record['name'],
+                        type=record['type'],
+                        observations=observations,
+                        created_at=record.get('created_at', time.time()),
+                        last_modified=record.get('last_modified', time.time()),
+                        metadata=metadata,
+                    )
+                    entities.append(entity)
+                    entity_names.add(entity.name)
+
+                # Check for column-based format (col_0, col_1, col_2, col_3, col_4, col_5, col_6)
+                elif 'col_0' in record and 'col_1' in record:
+                    # col_0 = id, col_1 = name, col_2 = type, col_3 = observations,
+                    # col_4 = created_at, col_5 = last_modified, col_6 = all_properties
+                    entity_id = record.get('col_0')
+                    name = record.get('col_1')
+                    entity_type = record.get('col_2')
+                    observations = record.get('col_3', [])
+
+                    # Handle both list and string formats for observations
+                    if isinstance(observations, str):
+                        observations = observations.split('|') if observations else []
+                    elif not isinstance(observations, list):
+                        observations = []
+
+                    # Extract metadata from all_properties, excluding core fields
+                    all_props = record.get('col_6', {})
+                    metadata = {}
+                    if isinstance(all_props, dict):
+                        core_fields = {
+                            'id',
+                            'name',
+                            'type',
+                            'observations',
+                            'created_at',
+                            'last_modified',
+                        }
+                        metadata = {
+                            k: v for k, v in all_props.items() if k not in core_fields
+                        }
+
+                    entity = Entity(
+                        id=entity_id,
+                        name=name,
+                        type=entity_type,
+                        observations=observations,
+                        created_at=record.get('col_4', time.time()),
+                        last_modified=record.get('col_5', time.time()),
+                        metadata=metadata,
+                    )
+                    entities.append(entity)
+                    entity_names.add(entity.name)
+                    continue
+
+                # Check for Neptune format with nested node
+                elif 'node' in record:
+                    record = record['node']
+
+                if 'name' in record:
+                    observations = record.get('observations', [])
+                    # Handle both list and string formats for observations
+                    if isinstance(observations, str):
+                        observations = observations.split('|') if observations else []
+                    elif not isinstance(observations, list):
+                        observations = []
+
+                    # Extract metadata from all_properties, excluding core fields
+                    all_props = record.get('all_properties', {})
+                    metadata = {}
+                    if isinstance(all_props, dict):
+                        core_fields = {
+                            'id',
+                            'name',
+                            'type',
+                            'observations',
+                            'created_at',
+                            'last_modified',
+                        }
+                        metadata = {
+                            k: v for k, v in all_props.items() if k not in core_fields
+                        }
+
+                    entity = Entity(
+                        id=record.get('id'),
+                        name=record['name'],
+                        type=record.get('type', 'Unknown'),
+                        observations=observations,
+                        created_at=record.get('created_at', time.time()),
+                        last_modified=record.get('last_modified', time.time()),
+                        metadata=metadata,
+                    )
+                    entities.append(entity)
+                    entity_names.add(entity.name)
+
+        # Now get relations with depth control
+        if filter_query:
+            # For filtered queries, get relations within the depth from filtered starting points
+            relation_query = f"""
+            MATCH path = (start:Memory)-[r:related_to*1..{depth}]-(end:Memory)
+            WHERE toLower(start.name) CONTAINS toLower($filter)
+            UNWIND relationships(path) as rel
+            MATCH (source:Memory)-[rel]->(target:Memory)
+            RETURN DISTINCT rel.id as id, source.name as source, target.name as target, rel.type as relationType,
+                   source.id as source_id, target.id as target_id, rel.created_at as created_at,
+                   properties(rel) as all_properties
+            """
+        else:
+            # For no filter, get relations between the entities we found
+            # Since we got all entities above, we get all relations (same as original behavior)
+            relation_query = """
+            MATCH (source:Memory)-[r:related_to]->(target:Memory)
+            RETURN r.id as id, source.name as source, target.name as target, r.type as relationType,
+                   source.id as source_id, target.id as target_id, r.created_at as created_at,
+                   properties(r) as all_properties
+            """
+
+        resp = self.client.query(
+            relation_query,
+            parameters={'filter': filter_query} if filter_query else {},
+            language=QueryLanguage.OPEN_CYPHER,
+        )
+
+        result = json.loads(resp)['results']
+        rels = []
+        for record in result:
+            # Handle different result formats from different backends (same logic as load_graph)
+            if isinstance(record, dict):
+                # Check for direct field access
+                if (
+                    'source' in record
+                    and 'target' in record
+                    and 'relationType' in record
+                ):
+                    # Only include relations where both source and target are in our entity set
+                    if (
+                        record['source'] in entity_names
+                        and record['target'] in entity_names
+                    ):
+                        # Extract properties from all_properties, excluding core fields
+                        all_props = record.get('all_properties', {})
+                        properties = {}
+                        if isinstance(all_props, dict):
+                            core_fields = {
+                                'id',
+                                'type',
+                                'source_id',
+                                'target_id',
+                                'created_at',
+                            }
+                            properties = {
+                                k: v
+                                for k, v in all_props.items()
+                                if k not in core_fields
+                            }
+
+                        rels.append(
+                            Relation(
+                                id=record.get('id'),
+                                source=record['source'],
+                                target=record['target'],
+                                relationType=record['relationType'],
+                                source_id=record.get('source_id'),
+                                target_id=record.get('target_id'),
+                                created_at=record.get('created_at', time.time()),
+                                properties=properties,
+                            )
+                        )
+
+                # Check for column-based format (col_0, col_1, col_2, col_3, col_4, col_5, col_6, col_7)
+                elif 'col_0' in record and 'col_1' in record and 'col_2' in record:
+                    # col_0 = r.id, col_1 = source.name, col_2 = target.name, col_3 = r.type,
+                    # col_4 = source.id, col_5 = target.id, col_6 = r.created_at, col_7 = all_properties
+                    source_name = record.get('col_1')
+                    target_name = record.get('col_2')
+
+                    # Only include relations where both source and target are in our entity set
+                    if source_name in entity_names and target_name in entity_names:
+                        all_props = record.get('col_7', {})
+                        properties = {}
+                        if isinstance(all_props, dict):
+                            core_fields = {
+                                'id',
+                                'type',
+                                'source_id',
+                                'target_id',
+                                'created_at',
+                            }
+                            properties = {
+                                k: v
+                                for k, v in all_props.items()
+                                if k not in core_fields
+                            }
+
+                        rels.append(
+                            Relation(
+                                id=record.get('col_0'),
+                                source=source_name,
+                                target=target_name,
+                                relationType=record.get('col_3'),
+                                source_id=record.get('col_4'),
+                                target_id=record.get('col_5'),
+                                created_at=record.get('col_6', time.time()),
+                                properties=properties,
+                            )
+                        )
+
+                # Check for Neptune format with nested rel
+                elif 'rel' in record:
+                    rel_data = record['rel']
+                    if 'relationType' in rel_data:
+                        # Only include relations where both source and target are in our entity set
+                        if (
+                            rel_data['source'] in entity_names
+                            and rel_data['target'] in entity_names
+                        ):
+                            # Extract properties from all_properties, excluding core fields
+                            all_props = rel_data.get('all_properties', {})
+                            properties = {}
+                            if isinstance(all_props, dict):
+                                core_fields = {
+                                    'id',
+                                    'type',
+                                    'source_id',
+                                    'target_id',
+                                    'created_at',
+                                }
+                                properties = {
+                                    k: v
+                                    for k, v in all_props.items()
+                                    if k not in core_fields
+                                }
+
+                            rels.append(
+                                Relation(
+                                    id=rel_data.get('id'),
+                                    source=rel_data['source'],
+                                    target=rel_data['target'],
+                                    relationType=rel_data['relationType'],
+                                    source_id=rel_data.get('source_id'),
+                                    target_id=rel_data.get('target_id'),
+                                    created_at=rel_data.get('created_at', time.time()),
+                                    properties=properties,
+                                )
+                            )
+
+        self.logger.debug(
+            f'Loaded {len(entities)} entities and {len(rels)} relations with depth {depth}'
+        )
+        return KnowledgeGraph(entities=entities, relations=rels)
+
+    def read_graph_from_entities(
+        self, entity_ids: List[str], depth: int = 1
+    ) -> KnowledgeGraph:
+        """Read the knowledge graph starting from specific entity IDs with depth control.
+
+        Retrieves entities and their relationships up to a specified depth, starting from
+        the provided entity IDs as root nodes.
+
+        Args:
+            entity_ids (List[str]): List of entity IDs to start traversal from
+            depth (int): Maximum depth for relationship traversal (default: 1, max: 5)
+
+        Returns:
+            KnowledgeGraph: Graph containing entities and relations within the specified depth from starting entities
+        """
+        # Validate depth parameter
+        if depth < 1:
+            depth = 1
+        elif depth > 5:
+            depth = 5
+
+        if not entity_ids:
+            self.logger.warning('No entity IDs provided, returning empty graph')
+            return KnowledgeGraph(entities=[], relations=[])
+
+        self.logger.debug(
+            f'Reading graph from entity IDs {entity_ids} with depth {depth}'
+        )
+
+        # Build the entity query starting from specific IDs
+        entity_query = f"""
+        MATCH path = (start:Memory)-[*0..{depth}]-(connected:Memory)
+        WHERE start.id IN $entity_ids
+        WITH DISTINCT connected as entity
+        RETURN entity.id as id, entity.name as name, entity.type as type, entity.observations as observations,
+               entity.created_at as created_at, entity.last_modified as last_modified,
+               properties(entity) as all_properties
+        """
+
+        resp = self.client.query(
+            entity_query,
+            parameters={'entity_ids': entity_ids},
+            language=QueryLanguage.OPEN_CYPHER,
+        )
+        result = json.loads(resp)['results']
+
+        entities = []
+        entity_names = set()  # Track entity names for relation filtering
+
+        for record in result:
+            # Handle different result formats from different backends (same logic as read_graph_with_depth)
+            if isinstance(record, dict):
+                # Check for direct field access (FalkorDB format)
+                if 'name' in record and 'type' in record:
+                    observations = record.get('observations', [])
+                    # Handle both list and string formats for observations
+                    if isinstance(observations, str):
+                        observations = observations.split('|') if observations else []
+                    elif not isinstance(observations, list):
+                        observations = []
+
+                    # Extract metadata from all_properties, excluding core fields
+                    all_props = record.get('all_properties', {})
+                    metadata = {}
+                    if isinstance(all_props, dict):
+                        core_fields = {
+                            'id',
+                            'name',
+                            'type',
+                            'observations',
+                            'created_at',
+                            'last_modified',
+                        }
+                        metadata = {
+                            k: v for k, v in all_props.items() if k not in core_fields
+                        }
+
+                    entity = Entity(
+                        id=record.get('id'),
+                        name=record['name'],
+                        type=record['type'],
+                        observations=observations,
+                        created_at=record.get('created_at', time.time()),
+                        last_modified=record.get('last_modified', time.time()),
+                        metadata=metadata,
+                    )
+                    entities.append(entity)
+                    entity_names.add(entity.name)
+
+                # Check for column-based format (col_0, col_1, col_2, col_3, col_4, col_5, col_6)
+                elif 'col_0' in record and 'col_1' in record:
+                    entity_id = record.get('col_0')
+                    name = record.get('col_1')
+                    entity_type = record.get('col_2')
+                    observations = record.get('col_3', [])
+
+                    # Handle both list and string formats for observations
+                    if isinstance(observations, str):
+                        observations = observations.split('|') if observations else []
+                    elif not isinstance(observations, list):
+                        observations = []
+
+                    # Extract metadata from all_properties, excluding core fields
+                    all_props = record.get('col_6', {})
+                    metadata = {}
+                    if isinstance(all_props, dict):
+                        core_fields = {
+                            'id',
+                            'name',
+                            'type',
+                            'observations',
+                            'created_at',
+                            'last_modified',
+                        }
+                        metadata = {
+                            k: v for k, v in all_props.items() if k not in core_fields
+                        }
+
+                    entity = Entity(
+                        id=entity_id,
+                        name=name,
+                        type=entity_type,
+                        observations=observations,
+                        created_at=record.get('col_4', time.time()),
+                        last_modified=record.get('col_5', time.time()),
+                        metadata=metadata,
+                    )
+                    entities.append(entity)
+                    entity_names.add(entity.name)
+                    continue
+
+                # Check for Neptune format with nested node
+                elif 'node' in record:
+                    record = record['node']
+
+                if 'name' in record:
+                    observations = record.get('observations', [])
+                    # Handle both list and string formats for observations
+                    if isinstance(observations, str):
+                        observations = observations.split('|') if observations else []
+                    elif not isinstance(observations, list):
+                        observations = []
+
+                    # Extract metadata from all_properties, excluding core fields
+                    all_props = record.get('all_properties', {})
+                    metadata = {}
+                    if isinstance(all_props, dict):
+                        core_fields = {
+                            'id',
+                            'name',
+                            'type',
+                            'observations',
+                            'created_at',
+                            'last_modified',
+                        }
+                        metadata = {
+                            k: v for k, v in all_props.items() if k not in core_fields
+                        }
+
+                    entity = Entity(
+                        id=record.get('id'),
+                        name=record['name'],
+                        type=record.get('type', 'Unknown'),
+                        observations=observations,
+                        created_at=record.get('created_at', time.time()),
+                        last_modified=record.get('last_modified', time.time()),
+                        metadata=metadata,
+                    )
+                    entities.append(entity)
+                    entity_names.add(entity.name)
+
+        # Now get relations within the subgraph
+        relation_query = f"""
+        MATCH path = (start:Memory)-[r:related_to*1..{depth}]-(end:Memory)
+        WHERE start.id IN $entity_ids
+        UNWIND relationships(path) as rel
+        MATCH (source:Memory)-[rel]->(target:Memory)
+        RETURN DISTINCT rel.id as id, source.name as source, target.name as target, rel.type as relationType,
+               source.id as source_id, target.id as target_id, rel.created_at as created_at,
+               properties(rel) as all_properties
+        """
+
+        resp = self.client.query(
+            relation_query,
+            parameters={'entity_ids': entity_ids},
+            language=QueryLanguage.OPEN_CYPHER,
+        )
+
+        result = json.loads(resp)['results']
+        rels = []
+        for record in result:
+            # Handle different result formats from different backends (same logic as read_graph_with_depth)
+            if isinstance(record, dict):
+                # Check for direct field access
+                if (
+                    'source' in record
+                    and 'target' in record
+                    and 'relationType' in record
+                ):
+                    # Only include relations where both source and target are in our entity set
+                    if (
+                        record['source'] in entity_names
+                        and record['target'] in entity_names
+                    ):
+                        # Extract properties from all_properties, excluding core fields
+                        all_props = record.get('all_properties', {})
+                        properties = {}
+                        if isinstance(all_props, dict):
+                            core_fields = {
+                                'id',
+                                'type',
+                                'source_id',
+                                'target_id',
+                                'created_at',
+                            }
+                            properties = {
+                                k: v
+                                for k, v in all_props.items()
+                                if k not in core_fields
+                            }
+
+                        rels.append(
+                            Relation(
+                                id=record.get('id'),
+                                source=record['source'],
+                                target=record['target'],
+                                relationType=record['relationType'],
+                                source_id=record.get('source_id'),
+                                target_id=record.get('target_id'),
+                                created_at=record.get('created_at', time.time()),
+                                properties=properties,
+                            )
+                        )
+
+                # Check for column-based format
+                elif 'col_0' in record and 'col_1' in record and 'col_2' in record:
+                    source_name = record.get('col_1')
+                    target_name = record.get('col_2')
+
+                    # Only include relations where both source and target are in our entity set
+                    if source_name in entity_names and target_name in entity_names:
+                        all_props = record.get('col_7', {})
+                        properties = {}
+                        if isinstance(all_props, dict):
+                            core_fields = {
+                                'id',
+                                'type',
+                                'source_id',
+                                'target_id',
+                                'created_at',
+                            }
+                            properties = {
+                                k: v
+                                for k, v in all_props.items()
+                                if k not in core_fields
+                            }
+
+                        rels.append(
+                            Relation(
+                                id=record.get('col_0'),
+                                source=source_name,
+                                target=target_name,
+                                relationType=record.get('col_3'),
+                                source_id=record.get('col_4'),
+                                target_id=record.get('col_5'),
+                                created_at=record.get('col_6', time.time()),
+                                properties=properties,
+                            )
+                        )
+
+        self.logger.debug(
+            f'Loaded {len(entities)} entities and {len(rels)} relations from entity IDs with depth {depth}'
+        )
+        return KnowledgeGraph(entities=entities, relations=rels)
+
+    def search_nodes(self, query: str, depth: int = 1) -> KnowledgeGraph:
+        """Search for nodes in the knowledge graph by name with depth control.
 
         Args:
             query (str): Search query string (searches entity names only, not observations)
+            depth (int): Maximum depth for relationship traversal (default: 1, max: 5)
 
         Returns:
-            KnowledgeGraph: Graph containing matching nodes and their relations
+            KnowledgeGraph: Graph containing matching nodes and their relations within specified depth
         """
-        self.logger.debug(f"Searching nodes with query: '{query}'")
+        self.logger.debug(f"Searching nodes with query: '{query}' and depth: {depth}")
 
         # If query is empty, return empty results instead of all data
         if not query or query.strip() == '':
             self.logger.debug('Empty query provided, returning empty results')
             return KnowledgeGraph(entities=[], relations=[])
 
-        result = self.load_graph(query)
+        # Validate depth parameter
+        if depth < 1:
+            depth = 1
+        elif depth > 5:
+            depth = 5
+
+        result = self.read_graph_with_depth(depth=depth, filter_query=query)
         self.logger.debug(
-            f'Search found {len(result.entities)} entities and {len(result.relations)} relations'
+            f'Search found {len(result.entities)} entities and {len(result.relations)} relations with depth {depth}'
         )
         return result
 
@@ -560,7 +1178,7 @@ class KnowledgeGraphManager:
         """Create new entities with auto-generated IDs if not provided.
 
         Uses MERGE logic: ON CREATE sets all fields, ON MATCH updates last_modified and merges metadata.
-        
+
         Note: Entity observations should be timestamped entries in format "YYYY-MM-DD HH:MM:SS | content"
         containing only recent, time-sensitive information. Maximum 15 entries per entity, with
         automatic pruning of oldest entries when limit is exceeded.
