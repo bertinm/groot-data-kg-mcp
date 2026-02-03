@@ -23,4 +23,4 @@ EXPOSE 8888
 ENV UVICORN_HOST=0.0.0.0
 
 # Set default command
-CMD ["uv", "run", "graph-memory-mcp-server", "--backend", "falkordb", "--falkor-host", "groot-graph-db", "--sse", "--port", "8888"]
+CMD ["uv", "run", "ws-memory-mcp-server", "--backend", "falkordb", "--falkor-host", "groot-graph-db", "--sse", "--port", "8888"]

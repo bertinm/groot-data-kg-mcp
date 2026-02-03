@@ -1,6 +1,3 @@
-#
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
 # with the License. A copy of the License is located at
 #
@@ -10,13 +7,26 @@
 # OR CONDITIONS OF ANY KIND, express or implied. See the License for the specific language governing permissions
 # and limitations under the License.
 #
-"""Neptune Memory Server Module
+"""Graph Memory MCP Server Module
 
-This module implements a Model Context Protocol (MCP) server that provides access to a memory system
-stored in Amazon Neptune graph database. It enables creation, reading, and searching of entities
-and relations in the knowledge graph.
+This module implements a Model Context Protocol (MCP) server that provides access to a knowledge graph
+memory system supporting both Amazon Neptune (Database and Analytics) and FalkorDB backends. It enables
+creation, reading, updating, deleting, and semantic searching of entities and relations in the knowledge graph.
 
-The server exposes various tools through FastMCP for managing the knowledge graph operations.
+The server supports three operational modes:
+- 'read': Read-only access to the knowledge graph
+- 'write': Write-only access for creating and modifying data
+- 'full': Complete access with all read and write operations
+
+Key features:
+- Multi-backend support (Neptune Database, Neptune Analytics, FalkorDB)
+- Semantic vector search using sentence transformers
+- Depth-controlled graph traversal
+- Entity and relationship management with full CRUD operations
+- Configurable logging and transport options (SSE and standard)
+- Automatic embedding generation for semantic search capabilities
+
+The server exposes various tools through FastMCP for comprehensive knowledge graph operations.
 """
 
 import argparse
@@ -26,7 +36,7 @@ from typing import List
 from ws_memory_mcp.falkordb_server import FalkorDBServer
 from ws_memory_mcp.memory import KnowledgeGraphManager
 from ws_memory_mcp.models import Entity, Relation
-from ws_memory_mcp.neptune import NeptuneServer
+from ws_memory_mcp.neptune_server import NeptuneServer
 
 
 logger = logging.getLogger(__name__)
@@ -151,7 +161,7 @@ def get_status() -> str:
 def create_entities(entities: List[Entity]) -> str:
     """Create multiple new entities in the knowledge graph.
 
-    Automatically generates semantic embeddings for vector search from entity name, type, 
+    Automatically generates semantic embeddings for vector search from entity name, type,
     and observations. These embeddings enable intelligent semantic search capabilities.
 
     Args:
@@ -298,13 +308,13 @@ def search_memory(query: str) -> dict:
     the graph starting from those entities.
 
     Args:
-        query (str): The search query string. Can be conceptual (e.g., "artificial intelligence", 
-                    "cooking recipes") or specific terms. The system will find semantically 
+        query (str): The search query string. Can be conceptual (e.g., "artificial intelligence",
+                    "cooking recipes") or specific terms. The system will find semantically
                     related entities using vector embeddings.
 
     Returns:
-        dict: A dictionary containing matching entities ranked by semantic similarity, 
-              with their IDs for use with read_memory. May include vector_search_score 
+        dict: A dictionary containing matching entities ranked by semantic similarity,
+              with their IDs for use with read_memory. May include vector_search_score
               in metadata when available.
     """
     if not query or query.strip() == '':
@@ -359,7 +369,7 @@ def get_entity_by_id(entity_id: str) -> dict:
 def update_entity_by_id(entity_id: str, updates: dict) -> str:
     """Update any attributes of an entity by its unique ID.
 
-    Automatically regenerates semantic embeddings when embedding-relevant attributes 
+    Automatically regenerates semantic embeddings when embedding-relevant attributes
     (name, type, observations) are updated to ensure vector search accuracy.
 
     Args:

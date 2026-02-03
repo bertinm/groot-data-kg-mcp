@@ -1,6 +1,3 @@
-#
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
 # with the License. A copy of the License is located at
 #
@@ -12,12 +9,26 @@
 #
 """FalkorDB Database Interface Module
 
-This module provides a high-level interface for interacting with FalkorDB instances.
-It handles connection management, query execution, and schema operations for FalkorDB
-graph databases, providing a unified interface similar to the Neptune implementation.
+This module provides a comprehensive high-level interface for interacting with FalkorDB instances,
+a Redis-based graph database. It handles connection management, query execution, schema operations,
+and provides a unified interface compatible with the Neptune implementation through the GraphServer
+abstract base class.
 
-The module supports OpenCypher queries and provides a unified interface through the
-FalkorDBServer class.
+Key features:
+- Redis-based graph database connectivity with SSL support
+- OpenCypher query language support
+- Comprehensive schema introspection and metadata extraction
+- Property and relationship pattern discovery
+- Connection pooling and error handling
+- Configurable authentication and security options
+- JSON result formatting compatible with Neptune interface
+
+The FalkorDBServer class implements the GraphServer interface, ensuring seamless integration
+with the broader graph memory system while providing FalkorDB-specific optimizations and
+query execution strategies.
+
+Connection options include host, port, password authentication, SSL encryption, and
+custom graph naming for multi-tenant deployments.
 """
 
 import json

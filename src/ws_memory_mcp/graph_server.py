@@ -1,6 +1,3 @@
-#
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
 # with the License. A copy of the License is located at
 #
@@ -12,9 +9,27 @@
 #
 """Abstract Graph Server Interface Module
 
-This module defines the abstract base class for graph database servers.
-It provides a common interface that can be implemented by different graph
-database backends like Neptune and FalkorDB.
+This module defines the abstract base class for graph database servers, providing a unified
+interface that can be implemented by different graph database backends like Amazon Neptune
+(Database and Analytics) and FalkorDB. This abstraction enables the memory management system
+to work seamlessly across multiple graph database technologies.
+
+The GraphServer abstract base class defines the core contract that all graph database
+implementations must follow:
+
+- Connection lifecycle management (close)
+- Health monitoring and status checking
+- Schema introspection and metadata retrieval
+- Query execution with multiple language support
+- Standardized error handling and response formats
+
+This design pattern allows the knowledge graph management system to be database-agnostic,
+supporting easy migration between different graph database backends while maintaining
+consistent functionality and API compatibility.
+
+Implementations include:
+- NeptuneServer: For Amazon Neptune Database and Analytics
+- FalkorDBServer: For Redis-based FalkorDB instances
 """
 
 from abc import ABC, abstractmethod

@@ -1,6 +1,3 @@
-#
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
 # with the License. A copy of the License is located at
 #
@@ -10,14 +7,25 @@
 # OR CONDITIONS OF ANY KIND, express or implied. See the License for the specific language governing permissions
 # and limitations under the License.
 #
-"""Knowledge Graph Management Module for Neptune Memory System
+"""Knowledge Graph Management Module
 
-This module provides a comprehensive interface for managing a knowledge graph in Amazon Neptune.
+This module provides a comprehensive interface for managing knowledge graphs across multiple
+graph database backends including Amazon Neptune (Database and Analytics) and FalkorDB.
 It handles all graph operations including creating, reading, updating, and deleting entities,
 relations, and observations in the knowledge graph.
 
+Key features:
+- Multi-backend support with unified interface
+- Semantic vector search using sentence transformers (384-dimensional embeddings)
+- Depth-controlled graph traversal and entity-based navigation
+- Full CRUD operations for entities and relationships
+- Automatic embedding generation and vector index management
+- Observation management with timestamped entries and automatic pruning
+- Flexible search capabilities (vector-based semantic search with string fallback)
+
 The KnowledgeGraphManager class serves as the main interface for all graph operations,
-providing methods to manipulate and query the graph structure while maintaining data consistency.
+providing methods to manipulate and query the graph structure while maintaining data consistency
+across different database backends.
 
 Note: Entity observations should be timestamped entries in format "YYYY-MM-DD HH:MM:SS | content"
 containing only recent, time-sensitive information (not relationships or static facts).
@@ -37,10 +45,12 @@ from ws_memory_mcp.models import (
     QueryLanguage,
     Relation,
 )
-from ws_memory_mcp.neptune import NeptuneServer, EngineType
+from ws_memory_mcp.neptune_server import EngineType, NeptuneServer
+
 
 try:
     from sentence_transformers import SentenceTransformer
+
     SENTENCE_TRANSFORMERS_AVAILABLE = True
 except ImportError:
     SENTENCE_TRANSFORMERS_AVAILABLE = False
@@ -67,30 +77,35 @@ class KnowledgeGraphManager:
         """
         self.client = client
         self.logger = logger
-        
+
         # Initialize vector search components
         self.embedding_model = None
         self.is_neptune_analytics = False
         self.vector_search_enabled = False
-        
+
         # Detect backend type and initialize vector search
-        if isinstance(client, NeptuneServer) and client._engine_type == EngineType.ANALYTICS:
+        if (
+            isinstance(client, NeptuneServer)
+            and client._engine_type == EngineType.ANALYTICS
+        ):
             self.is_neptune_analytics = True
-        
+
         # Initialize sentence transformer if available
         if SENTENCE_TRANSFORMERS_AVAILABLE:
             try:
                 self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
                 self.vector_search_enabled = True
-                self.logger.info("Vector search enabled with all-MiniLM-L6-v2 model")
-                
+                self.logger.info('Vector search enabled with all-MiniLM-L6-v2 model')
+
                 # Ensure vector index exists
                 self._ensure_vector_index()
             except Exception as e:
-                self.logger.warning(f"Failed to initialize vector search: {e}")
+                self.logger.warning(f'Failed to initialize vector search: {e}')
                 self.vector_search_enabled = False
         else:
-            self.logger.warning("sentence-transformers not available, vector search disabled")
+            self.logger.warning(
+                'sentence-transformers not available, vector search disabled'
+            )
 
     def _compute_embedding(self, text: str) -> List[float]:
         """Compute embedding for a text string.
@@ -103,23 +118,25 @@ class KnowledgeGraphManager:
         """
         if not self.embedding_model:
             return []
-        
+
         try:
             embedding = self.embedding_model.encode(text)
             return embedding.tolist()
         except Exception as e:
-            self.logger.warning(f"Failed to compute embedding: {e}")
+            self.logger.warning(f'Failed to compute embedding: {e}')
             return []
 
     def _ensure_vector_index(self):
         """Ensure vector index exists for the backend."""
         if not self.vector_search_enabled:
             return
-            
+
         try:
             if self.is_neptune_analytics:
                 # Neptune Analytics: Vector indexes are defined at graph creation time
-                self.logger.info("Neptune Analytics detected - vector indexes should be defined at graph creation")
+                self.logger.info(
+                    'Neptune Analytics detected - vector indexes should be defined at graph creation'
+                )
             else:
                 # FalkorDB: Create vector index dynamically
                 index_query = """
@@ -128,15 +145,18 @@ class KnowledgeGraphManager:
                 """
                 try:
                     self.client.query(index_query, language=QueryLanguage.OPEN_CYPHER)
-                    self.logger.info("Created vector index for Memory nodes")
+                    self.logger.info('Created vector index for Memory nodes')
                 except Exception as e:
                     # Index might already exist, which is fine
-                    if "already exists" in str(e).lower() or "equivalent index" in str(e).lower():
-                        self.logger.debug("Vector index already exists")
+                    if (
+                        'already exists' in str(e).lower()
+                        or 'equivalent index' in str(e).lower()
+                    ):
+                        self.logger.debug('Vector index already exists')
                     else:
-                        self.logger.warning(f"Failed to create vector index: {e}")
+                        self.logger.warning(f'Failed to create vector index: {e}')
         except Exception as e:
-            self.logger.warning(f"Error ensuring vector index: {e}")
+            self.logger.warning(f'Error ensuring vector index: {e}')
 
     def load_graph(self, filter_query=None) -> KnowledgeGraph:
         """Load the knowledge graph with optional filtering.
@@ -1122,7 +1142,9 @@ class KnowledgeGraphManager:
             try:
                 return self._vector_search_nodes(query, depth)
             except Exception as e:
-                self.logger.warning(f"Vector search failed, falling back to string search: {e}")
+                self.logger.warning(
+                    f'Vector search failed, falling back to string search: {e}'
+                )
 
         # Fallback to string-based search
         if depth == 0:
@@ -1132,7 +1154,7 @@ class KnowledgeGraphManager:
             return KnowledgeGraph(entities=result.entities, relations=[])
         else:
             result = self.read_graph_with_depth(depth=depth, filter_query=query)
-        
+
         self.logger.debug(
             f'Search found {len(result.entities)} entities and {len(result.relations)} relations with depth {depth}'
         )
@@ -1151,7 +1173,7 @@ class KnowledgeGraphManager:
         # Generate embedding for the query
         query_embedding = self._compute_embedding(query)
         if not query_embedding:
-            raise Exception("Failed to generate query embedding")
+            raise Exception('Failed to generate query embedding')
 
         # Execute vector search based on backend
         if self.is_neptune_analytics:
@@ -1196,9 +1218,16 @@ class KnowledgeGraphManager:
                     metadata = {}
                     if isinstance(all_props, dict):
                         core_fields = {
-                            'id', 'name', 'type', 'observations', 'created_at', 'last_modified'
+                            'id',
+                            'name',
+                            'type',
+                            'observations',
+                            'created_at',
+                            'last_modified',
                         }
-                        metadata = {k: v for k, v in all_props.items() if k not in core_fields}
+                        metadata = {
+                            k: v for k, v in all_props.items() if k not in core_fields
+                        }
 
                     # Add score to metadata
                     score = record.get('score', 0.0)
@@ -1230,9 +1259,16 @@ class KnowledgeGraphManager:
                     metadata = {}
                     if isinstance(all_props, dict):
                         core_fields = {
-                            'id', 'name', 'type', 'observations', 'created_at', 'last_modified'
+                            'id',
+                            'name',
+                            'type',
+                            'observations',
+                            'created_at',
+                            'last_modified',
                         }
-                        metadata = {k: v for k, v in all_props.items() if k not in core_fields}
+                        metadata = {
+                            k: v for k, v in all_props.items() if k not in core_fields
+                        }
 
                     # Add score to metadata
                     score = record.get('col_8', 0.0)
@@ -1253,7 +1289,9 @@ class KnowledgeGraphManager:
 
         # If depth is 0, return only entities
         if depth == 0:
-            self.logger.debug(f'Vector search found {len(entities)} entities with depth 0')
+            self.logger.debug(
+                f'Vector search found {len(entities)} entities with depth 0'
+            )
             return KnowledgeGraph(entities=entities, relations=[])
 
         # For depth > 0, get relations between found entities
@@ -1279,12 +1317,24 @@ class KnowledgeGraphManager:
         rels = []
         for record in result:
             if isinstance(record, dict):
-                if 'source' in record and 'target' in record and 'relationType' in record:
+                if (
+                    'source' in record
+                    and 'target' in record
+                    and 'relationType' in record
+                ):
                     all_props = record.get('all_properties', {})
                     properties = {}
                     if isinstance(all_props, dict):
-                        core_fields = {'id', 'type', 'source_id', 'target_id', 'created_at'}
-                        properties = {k: v for k, v in all_props.items() if k not in core_fields}
+                        core_fields = {
+                            'id',
+                            'type',
+                            'source_id',
+                            'target_id',
+                            'created_at',
+                        }
+                        properties = {
+                            k: v for k, v in all_props.items() if k not in core_fields
+                        }
 
                     rels.append(
                         Relation(
@@ -1299,7 +1349,9 @@ class KnowledgeGraphManager:
                         )
                     )
 
-        self.logger.debug(f'Vector search found {len(entities)} entities and {len(rels)} relations with depth {depth}')
+        self.logger.debug(
+            f'Vector search found {len(entities)} entities and {len(rels)} relations with depth {depth}'
+        )
         return KnowledgeGraph(entities=entities, relations=rels)
 
     def find_entity_ids_by_name(self, name: str) -> List[str]:
@@ -1460,16 +1512,16 @@ class KnowledgeGraphManager:
                 entity.created_at = current_time
             if not hasattr(entity, 'last_modified') or entity.last_modified is None:
                 entity.last_modified = current_time
-            
+
             # Generate embedding if not present and vector search is enabled
             if self.vector_search_enabled and not entity.embedding:
                 # Combine name, type, and observations for embedding
-                text_for_embedding = f"{entity.name} {entity.type}"
+                text_for_embedding = f'{entity.name} {entity.type}'
                 if entity.observations:
                     # Take first few observations to avoid too long text
-                    obs_text = " ".join(entity.observations[:3])
-                    text_for_embedding += f" {obs_text}"
-                
+                    obs_text = ' '.join(entity.observations[:3])
+                    text_for_embedding += f' {obs_text}'
+
                 entity.embedding = self._compute_embedding(text_for_embedding)
 
         if self.is_neptune_analytics:
@@ -1505,10 +1557,10 @@ class KnowledgeGraphManager:
                 e.created_at = entity.created_at,
                 e.last_modified = entity.last_modified,
                 e.observations = entity.observations,
-                e.embedding = CASE 
-                    WHEN entity.embedding IS NOT NULL AND size(entity.embedding) > 0 
-                    THEN vecf32(entity.embedding) 
-                    ELSE null 
+                e.embedding = CASE
+                    WHEN entity.embedding IS NOT NULL AND size(entity.embedding) > 0
+                    THEN vecf32(entity.embedding)
+                    ELSE null
                 END
             ON MATCH SET
                 e.last_modified = $now,
@@ -1517,10 +1569,10 @@ class KnowledgeGraphManager:
                     THEN [obs IN entity.observations WHERE NOT obs IN coalesce(e.observations, [])] + coalesce(e.observations, [])
                     ELSE coalesce(e.observations, [])
                 END,
-                e.embedding = CASE 
-                    WHEN entity.embedding IS NOT NULL AND size(entity.embedding) > 0 
-                    THEN vecf32(entity.embedding) 
-                    ELSE e.embedding 
+                e.embedding = CASE
+                    WHEN entity.embedding IS NOT NULL AND size(entity.embedding) > 0
+                    THEN vecf32(entity.embedding)
+                    ELSE e.embedding
                 END
             SET e += entity.metadata
             """
@@ -1677,10 +1729,12 @@ class KnowledgeGraphManager:
         current_name = current_entity.get('name', '')
         current_type = current_entity.get('type', '')
         current_observations = current_entity.get('observations', [])
-        
+
         # Handle observations format
         if isinstance(current_observations, str):
-            current_observations = current_observations.split('|') if current_observations else []
+            current_observations = (
+                current_observations.split('|') if current_observations else []
+            )
         elif not isinstance(current_observations, list):
             current_observations = []
 
@@ -1700,15 +1754,17 @@ class KnowledgeGraphManager:
                 set_clauses.append(f'e.{key} = ${param_name}')
                 parameters[param_name] = value
                 embedding_relevant_update = True
-                
+
                 # Track updated values for embedding generation
                 if key == 'name':
                     updated_name = value
                 elif key == 'type':
                     updated_type = value
                 elif key == 'observations':
-                    updated_observations = value if isinstance(value, list) else [value] if value else []
-                    
+                    updated_observations = (
+                        value if isinstance(value, list) else [value] if value else []
+                    )
+
             elif key == 'metadata':
                 # Merge metadata using += operator
                 set_clauses.append('e += $new_metadata')
@@ -1723,14 +1779,14 @@ class KnowledgeGraphManager:
         # Generate new embedding if embedding-relevant attributes were updated and vector search is enabled
         if embedding_relevant_update and self.vector_search_enabled:
             # Combine updated name, type, and observations for embedding
-            text_for_embedding = f"{updated_name} {updated_type}"
+            text_for_embedding = f'{updated_name} {updated_type}'
             if updated_observations:
                 # Take first few observations to avoid too long text
-                obs_text = " ".join(updated_observations[:3])
-                text_for_embedding += f" {obs_text}"
-            
+                obs_text = ' '.join(updated_observations[:3])
+                text_for_embedding += f' {obs_text}'
+
             new_embedding = self._compute_embedding(text_for_embedding)
-            
+
             if new_embedding:
                 if self.is_neptune_analytics:
                     # Neptune Analytics: Use vector upsert after the main update
@@ -1739,8 +1795,10 @@ class KnowledgeGraphManager:
                     # FalkorDB: Set embedding directly in the same query
                     set_clauses.append('e.embedding = $new_embedding')
                     parameters['new_embedding'] = new_embedding
-                
-                self.logger.debug(f"Generated new embedding for entity '{entity_id}' due to attribute updates")
+
+                self.logger.debug(
+                    f"Generated new embedding for entity '{entity_id}' due to attribute updates"
+                )
 
         update_query = f"""
         MATCH (e:Memory {{ id: $entity_id }})
@@ -1753,23 +1811,37 @@ class KnowledgeGraphManager:
             self.client.query(
                 update_query, parameters=parameters, language=QueryLanguage.OPEN_CYPHER
             )
-            
+
             # For Neptune Analytics, perform vector upsert separately
-            if embedding_relevant_update and self.vector_search_enabled and self.is_neptune_analytics and 'new_embedding' in parameters:
+            if (
+                embedding_relevant_update
+                and self.vector_search_enabled
+                and self.is_neptune_analytics
+                and 'new_embedding' in parameters
+            ):
                 vector_upsert_query = """
                 MATCH (e:Memory { id: $entity_id })
                 CALL neptune.algo.vectors.upsert(e, $new_embedding)
                 """
                 self.client.query(
                     vector_upsert_query,
-                    parameters={'entity_id': entity_id, 'new_embedding': parameters['new_embedding']},
-                    language=QueryLanguage.OPEN_CYPHER
+                    parameters={
+                        'entity_id': entity_id,
+                        'new_embedding': parameters['new_embedding'],
+                    },
+                    language=QueryLanguage.OPEN_CYPHER,
                 )
-                self.logger.debug(f"Updated vector embedding for entity '{entity_id}' in Neptune Analytics")
-            
+                self.logger.debug(
+                    f"Updated vector embedding for entity '{entity_id}' in Neptune Analytics"
+                )
+
             self.logger.info(
                 f"Successfully updated entity with ID '{entity_id}' with attributes: {list(updates.keys())}"
-                + (" (embedding regenerated)" if embedding_relevant_update and self.vector_search_enabled else "")
+                + (
+                    ' (embedding regenerated)'
+                    if embedding_relevant_update and self.vector_search_enabled
+                    else ''
+                )
             )
             return True
         except Exception as e:

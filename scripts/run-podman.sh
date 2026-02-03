@@ -36,7 +36,7 @@ podman run -d \
   -e FASTMCP_LOG_LEVEL=INFO \
   --restart unless-stopped \
   groot-mcp-server \
-  uv run graph-memory-mcp-server \
+  uv run ws-memory-mcp-server \
   --backend falkordb \
   --falkor-host groot-graph-db \
   --falkor-port 6379 \

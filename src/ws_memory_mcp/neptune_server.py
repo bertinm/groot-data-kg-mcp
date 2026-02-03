@@ -1,6 +1,3 @@
-#
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
 # with the License. A copy of the License is located at
 #
@@ -10,14 +7,28 @@
 # OR CONDITIONS OF ANY KIND, express or implied. See the License for the specific language governing permissions
 # and limitations under the License.
 #
-"""Neptune Database Interface Module
+"""Amazon Neptune Database Interface Module
 
-This module provides a high-level interface for interacting with Amazon Neptune databases,
-supporting both Neptune Analytics and Neptune Database instances. It handles connection
-management, query execution, and schema operations for both graph database types.
+This module provides a comprehensive high-level interface for interacting with Amazon Neptune
+databases, supporting both Neptune Analytics and Neptune Database instances. It handles connection
+management, query execution, schema operations, and automatic engine type detection for both
+graph database deployment types.
 
-The module supports multiple query languages (OpenCypher and Gremlin) and provides
-a unified interface for different Neptune deployment types through the NeptuneServer class.
+Key features:
+- Unified interface for Neptune Database and Neptune Analytics
+- Automatic engine type detection from endpoint format
+- Support for multiple query languages (OpenCypher and Gremlin)
+- Comprehensive schema introspection and metadata extraction
+- Secure connection management with configurable HTTPS support
+- Error handling and status monitoring
+- Property graph schema analysis and relationship pattern discovery
+
+The module supports endpoint formats:
+- neptune-db://<endpoint> for Neptune Database clusters
+- neptune-graph://<graphid> for Neptune Analytics graphs
+
+The NeptuneServer class provides a unified interface through the GraphServer abstract base class,
+ensuring compatibility with other graph database implementations in the system.
 """
 
 import json

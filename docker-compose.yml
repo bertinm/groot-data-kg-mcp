@@ -30,7 +30,7 @@ services:
     depends_on:
       - falkordb
     command: >
-      uv run graph-memory-mcp-server 
+      uv run ws-memory-mcp-server 
       --backend falkordb 
       --falkor-host falkordb 
       --falkor-port 6379 

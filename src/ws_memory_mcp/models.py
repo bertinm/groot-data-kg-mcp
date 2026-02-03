@@ -1,6 +1,3 @@
-#
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License"). You may not use this file except in compliance
 # with the License. A copy of the License is located at
 #
@@ -10,15 +7,26 @@
 # OR CONDITIONS OF ANY KIND, express or implied. See the License for the specific language governing permissions
 # and limitations under the License.
 #
-"""Data Models Module for Neptune Memory System
+"""Data Models Module for Graph Memory System
 
-This module defines the data structures used in the Neptune memory system, including
-graph schema definitions and knowledge graph representations. It uses dataclasses
-for clean and type-safe data modeling.
+This module defines the comprehensive data structures used in the graph memory system, including
+graph schema definitions and knowledge graph representations. It uses dataclasses for clean
+and type-safe data modeling across multiple graph database backends.
 
-The module contains two main groups of models:
-1. Graph Schema Models: For defining the structure of the graph database
-2. Knowledge Graph Models: For representing the actual data within the graph
+The module contains several groups of models:
+
+1. Query Language Enums: Supported query languages (OpenCypher, Gremlin)
+2. Graph Schema Models: For defining the structure of graph databases
+3. Knowledge Graph Models: For representing actual data within the graph
+4. Entity and Relationship Models: Core data structures with full metadata support
+5. Observation Models: For timestamped, time-sensitive entity information
+
+Key features:
+- Support for multiple graph database backends (Neptune Database, Neptune Analytics, FalkorDB)
+- Vector embedding support for semantic search (384-dimensional embeddings)
+- Comprehensive metadata and provenance tracking
+- Timestamped observations with automatic pruning
+- Flexible property and relationship modeling
 """
 
 import time
